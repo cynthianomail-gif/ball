@@ -1,5 +1,5 @@
 import { buildTrack, STEP } from './track.js';
-import { Race, initPhysics, DT } from './sim.js';
+import { Race, initPhysics, DT, MARBLE_REST } from './sim.js';
 import { View, CAM_MODES } from './render.js';
 import { priceRace } from './odds.js';
 import * as sfx from './sound.js';
@@ -8,9 +8,8 @@ const $ = id => document.getElementById(id);
 const hex = c => '#' + c.toString(16).padStart(6, '0');
 const CHIPS = [10, 50, 100, 500];
 const START_COINS = 1000;
-const SPEEDS = [1, 2, 3, 5];
-const BASE_SPEED = 2;         // 「1x」實際是物理時間的 2 倍，比賽節奏才夠快
-const MAX_STEPS = 24;         // 一幀最多跑幾步物理（5x＝10 倍物理時間，在 30fps 的手機上要 20 步）
+const SPEEDS = [1, 2, 3, 5, 10];
+const MAX_STEPS = 40;         // 一幀最多跑幾步物理：10x × 面板最高 4 倍＝40 倍，60fps 剛好跑得滿；手機跑不到就自然變慢，不追趕
 const FIELD = 10;            // 每場 10 顆彈珠
 // 10 種一眼分得出來的顏色：紅 橙 黃 綠 青 藍 紫 粉 棕 黑
 const FIELD_COLORS = [0xe63946, 0xff7b00, 0xffd60a, 0x2ec27e, 0x00b4d8, 0x1d4ed8, 0x8b3fd9, 0xff6fb5, 0x8d5524, 0x2b2b2b];
@@ -38,6 +37,31 @@ let speedK = 0;
 let acc = 0, last = performance.now();
 let msgTimer = 0, hudTimer = 0, lastCount = 0;
 let settled = false;
+
+// ---------- 調整面板 ----------
+// base＝「1x」實際是物理時間的幾倍（預設 2，比賽節奏才夠快）；rest＝彈珠互撞的彈性
+const TUNE_DEF = { base: 2, rest: MARBLE_REST };
+const TUNE_LIM = { base: [0.5, 4], rest: [0.1, 1] };
+const tuneVal = (k, v) => {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return TUNE_DEF[k];
+  return Math.min(TUNE_LIM[k][1], Math.max(TUNE_LIM[k][0], v));
+};
+const tune = { base: tuneVal('base', store.get('marbleDerby.base', TUNE_DEF.base)), rest: tuneVal('rest', store.get('marbleDerby.rest', TUNE_DEF.rest)) };
+const speedMult = () => tune.base * SPEEDS[speedK];
+const saveTune = () => { store.set('marbleDerby.base', tune.base); store.set('marbleDerby.rest', tune.rest); };
+// 彈珠彈性只影響彈珠互撞；其他物件取兩者較小值，所以調低時撞賽道、釘子也會變得較不彈
+function applyRest() { if (race) for (const m of race.marbles) m.collider.setRestitution(tune.rest); }
+function showTune() {
+  $('baseVal').textContent = `1x ＝ 物理 ${tune.base.toFixed(1)} 倍`;
+  $('restVal').textContent = tune.rest.toFixed(2);
+}
+function syncTune() { $('baseRange').value = tune.base; $('restRange').value = tune.rest; showTune(); }
+$('baseRange').oninput = e => { tune.base = tuneVal('base', Number(e.target.value)); showTune(); saveTune(); };
+$('restRange').oninput = e => { tune.rest = tuneVal('rest', Number(e.target.value)); showTune(); saveTune(); applyRest(); };
+$('tuneReset').onclick = () => { tune.base = TUNE_DEF.base; tune.rest = TUNE_DEF.rest; syncTune(); saveTune(); applyRest(); };
+$('tuneClose').onclick = () => $('tune').classList.add('hidden');
+for (const b of document.querySelectorAll('.gear')) b.onclick = () => $('tune').classList.toggle('hidden');
+syncTune();
 
 // ---------- 下注 ----------
 for (const c of CHIPS) {
@@ -69,6 +93,7 @@ function openBetting() {
 function setupRace() {
   if (race) race.world.free();
   race = new Race(track, { count: FIELD, seed: (Math.random() * 1e9) | 0, player: false, palette: FIELD_COLORS });
+  applyRest();
   priceRace(race);
   view.setRace(race);
   view.setMarked([]);
@@ -180,7 +205,7 @@ function cycleCam() {
 $('btnCam').onclick = cycleCam;
 $('btnSpeed').onclick = cycleSpeed;
 addEventListener('keydown', e => {
-  if (!race || phase === 'betting' || e.repeat) return;
+  if (!race || phase === 'betting' || e.repeat || e.target.tagName === 'INPUT') return;
   if (e.code === 'KeyC') cycleCam();
   if (e.code === 'KeyF') cycleFocus();
   if (e.code === 'Space') { cycleSpeed(); e.preventDefault(); }
@@ -205,7 +230,6 @@ function handleEvents() {
   for (const e of race.events) {
     switch (e.type) {
       case 'go': showMsg('GO!', '', 0.9); sfx.beep(880, 0.35); break;
-      case 'hop': if (e.m.id === view.focusMarble().id) sfx.boing(); break;
       case 'hit': hits.push(e); break;
       case 'finish':
         if (e.place <= 3) {
@@ -434,7 +458,7 @@ function frame(now) {
       if (c !== lastCount && c <= 3 && c >= 1) { lastCount = c; showMsg(String(c), '', 0.8); sfx.beep(440, 0.15); }
     }
     // 倒數照正常速度，開跑後才加速
-    const mult = race.phase === 'countdown' ? 1 : BASE_SPEED * SPEEDS[speedK];
+    const mult = race.phase === 'countdown' ? 1 : speedMult();
     acc += dt * mult;
     let n = 0;
     while (acc >= DT && n < MAX_STEPS) {
@@ -451,7 +475,7 @@ function frame(now) {
     view.yawOffset = Math.sin(now / 4000) * 0.6;
   }
   // 鏡頭平滑也照比賽時間走，快轉時鏡頭才跟得上
-  view.render(phase === 'betting' ? 0 : acc / DT, phase === 'betting' || race.phase === 'countdown' ? dt : dt * BASE_SPEED * SPEEDS[speedK]);
+  view.render(phase === 'betting' ? 0 : acc / DT, phase === 'betting' || race.phase === 'countdown' ? dt : dt * speedMult());
   if (phase !== 'betting') { updateHud(); updateTags(); }
   // 滾動聲跟著鏡頭跟隨的彈珠
   const fm = phase === 'betting' ? null : view.focusMarble();

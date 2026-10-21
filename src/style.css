@@ -68,6 +68,18 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #f3e3c8; col
 .betFoot button.big { margin: 0; font-size: 20px; padding: 10px 22px; }
 #clearBtn { margin: 0; }
 
+/* 調整面板：疊在下注／結算面板上面（DOM 順序在後）；面板本身是捲動容器，touch-action 才不被 body 的 none 蓋掉 */
+.gear { margin: 0 0 0 8px; padding: 3px 9px; font-size: 16px; line-height: 1.2; vertical-align: middle; }
+#ctrl .gear { margin: 0; font-size: 17px; }
+#tune { width: min(360px, calc(100vw - 24px)); padding: 14px 18px 16px; text-align: left; touch-action: pan-y; }
+.tuneHead { display: flex; justify-content: space-between; align-items: center; font-size: 20px; }
+.tuneHead button { margin: 0; padding: 2px 10px; font-size: 16px; }
+.tuneItem { margin-top: 14px; font-size: 13px; }
+.tuneTop { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 16px; font-weight: bold; }
+.tuneTop b { font-size: 15px; color: #b8860b; white-space: nowrap; }
+#tune input[type=range] { display: block; width: 100%; margin: 8px 0 4px; accent-color: #f6b929; touch-action: none; }
+#tuneReset { display: block; margin: 16px auto 0; padding: 8px 20px; }
+
 /* 結算 */
 #podium { text-align: left; margin: 6px auto 10px; padding-left: 24px; font-size: 18px; font-weight: bold; }
 #podium li { margin: 4px 0; } #podium .sw { margin-right: 6px; }
@@ -96,7 +108,9 @@ button.big { font-size: 24px; background: #f6b929; padding: 12px 40px; margin-to
   #board { font-size: 12px; min-width: 110px; right: 10px; top: 10px; padding: 6px 8px; }
   #board li { padding: 1px 4px; }
   #msg { font-size: 40px; } #sub { font-size: 16px; top: calc(30% + 56px); }
+  #ctrl { flex-wrap: wrap; justify-content: center; width: max-content; max-width: calc(100vw - 16px); }
   #ctrl button { font-size: 13px; padding: 7px 9px; }
+  #ctrl .gear { padding: 7px 8px; font-size: 15px; }
   .betHead { font-size: 15px; } .betHead .dim { display: none; } .coins { font-size: 18px; }
   .chip { padding: 4px 9px; }
   .ob { min-width: 64px; padding: 3px 5px; } .ob b { font-size: 14px; }
