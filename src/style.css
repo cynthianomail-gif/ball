@@ -48,7 +48,6 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #f3e3c8; col
 .flash { animation: flash .5s; }
 @keyframes flash { 30% { color: #d62828; transform: scale(1.15); } }
 #bankrupt { margin-top: 8px; padding: 6px 10px; border-radius: 10px; background: #ffe1a8; font-weight: bold; }
-.row.small { margin: 6px 0; }
 .chip { margin: 0 0 0 4px; padding: 4px 12px; border-radius: 999px; box-shadow: 0 3px 0 #2b1d10; }
 .chip.sel { background: #f6b929; }
 .legend { font-size: 12px; margin: 2px 0 6px; }
@@ -66,7 +65,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #f3e3c8; col
 .ob i { position: absolute; top: -9px; right: -6px; font-style: normal; font-size: 11px; background: #d62828; color: #fff; border-radius: 999px; padding: 0 6px; }
 .ob i:empty { display: none; }
 .betFoot { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
-.betFoot > div { flex: 1; }
+.betFoot > div { flex: 1; white-space: nowrap; }
 .betFoot button.big { margin: 0; font-size: 20px; padding: 10px 22px; }
 #clearBtn { margin: 0; }
 

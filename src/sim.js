@@ -44,7 +44,8 @@ const _yAxis = new THREE.Vector3(0, 1, 0);
 
 export class Race {
   // player: false 時沒有玩家彈珠，全部交給 AI（下注模式）
-  constructor(track, { count = 50, seed = 1, playerColor = null, autopilot = false, difficulty = 1, player = true } = {}) {
+  // elimRate：每過一個檢查點累計淘汰的比例；palette：指定每顆彈珠的顏色
+  constructor(track, { count = 50, seed = 1, playerColor = null, autopilot = false, difficulty = 1, player = true, elimRate = 0.2, palette = null } = {}) {
     this.track = track;
     this.count = count;
     this.rand = mulberry32(seed);
@@ -91,9 +92,9 @@ export class Race {
       return { ...sw, body, base: base.clone(), angle: this.rand() * Math.PI, halfLen: hl, pos };
     });
 
-    // 檢查點：每過一個淘汰 20%
+    // 檢查點：每過一個淘汰 elimRate（預設 20%）
     this.cps = track.checkpoints.map((i, k) => ({
-      i, s: i * STEP, keep: count - Math.round(count * 0.2 * (k + 1)), passed: [], closed: false,
+      i, s: i * STEP, keep: count - Math.round(count * elimRate * (k + 1)), passed: [], closed: false,
     }));
     this.finishS = track.finishI * STEP;
 
@@ -127,7 +128,7 @@ export class Race {
       const isPlayer = player && n === 0;
       const m = {
         id: n, isPlayer, name: isPlayer ? '你' : names[n % names.length],
-        color: isPlayer && playerColor != null ? playerColor : PALETTE[(n * 7) % PALETTE.length],
+        color: isPlayer && playerColor != null ? playerColor : palette ? palette[n % palette.length] : PALETTE[(n * 7) % PALETTE.length],
         pattern: n % 6,
         body, collider, alive: true, finished: false, place: 0,
         row: r, idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0,

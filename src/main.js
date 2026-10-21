@@ -9,6 +9,10 @@ const hex = c => '#' + c.toString(16).padStart(6, '0');
 const CHIPS = [10, 50, 100, 500];
 const START_COINS = 1000;
 const SPEEDS = [1, 2, 3];
+const FIELD = 10;            // 每場 10 顆彈珠
+const ELIM_RATE = 0.15;       // 每個檢查點淘汰 15%：10 → 8 → 7 → 5 → 4 顆跑完
+// 10 種一眼分得出來的顏色：紅 橙 黃 綠 青 藍 紫 粉 棕 黑
+const FIELD_COLORS = [0xe63946, 0xff7b00, 0xffd60a, 0x2ec27e, 0x00b4d8, 0x1d4ed8, 0x8b3fd9, 0xff6fb5, 0x8d5524, 0x2b2b2b];
 const TYPE_NAME = { win: '獨贏', top3: '前三' };
 
 // 錢包存在瀏覽器裡（無痕模式存不了也照樣能玩）
@@ -42,7 +46,6 @@ for (const c of CHIPS) {
   b.onclick = () => { chip = c; document.querySelectorAll('.chip').forEach(x => x.classList.toggle('sel', x === b)); };
   $('chips').appendChild(b);
 }
-$('count').onchange = () => setupRace();
 $('clearBtn').onclick = () => { bets = []; refreshBets(); };
 $('goBtn').onclick = () => { sfx.unlock(); startRace(); };
 $('nextBtn').onclick = () => openBetting();
@@ -64,7 +67,7 @@ function openBetting() {
 
 function setupRace() {
   if (race) race.world.free();
-  race = new Race(track, { count: Number($('count').value), seed: (Math.random() * 1e9) | 0, player: false });
+  race = new Race(track, { count: FIELD, seed: (Math.random() * 1e9) | 0, player: false, elimRate: ELIM_RATE, palette: FIELD_COLORS });
   priceRace(race);
   view.setRace(race);
   view.setMarked([]);
@@ -91,7 +94,7 @@ function buildField() {
     row.innerHTML = `
       <span class="no">${m.id + 1}</span>
       <span class="ball" style="--c:${hex(m.color)}"></span>
-      <div class="info"><div class="nm">${m.name}</div><div class="st">${'★'.repeat(m.stars)}${'☆'.repeat(5 - m.stars)} · 第 ${m.row + 1} 排</div></div>`;
+      <div class="info"><div class="nm">${m.name}</div><div class="st">${'★'.repeat(m.stars)}${'☆'.repeat(5 - m.stars)}</div></div>`;
     for (const type of ['win', 'top3']) {
       const b = document.createElement('button');
       b.className = 'ob';
@@ -117,7 +120,7 @@ function addBet(m, type) {
 function refreshBets() {
   $('coins').textContent = coins - staked();
   $('staked').textContent = staked();
-  $('goBtn').textContent = bets.length ? '開賽！' : '不下注，直接看';
+  $('goBtn').textContent = bets.length ? '開賽！' : '直接看';
   for (const el of document.querySelectorAll('.ob')) {
     const b = bets.find(x => x.id === Number(el.dataset.id) && x.type === el.dataset.type);
     el.classList.toggle('on', !!b);
@@ -228,7 +231,7 @@ function checkSettle() {
   const net = won - staked();
 
   setTimeout(() => {
-    $('resTitle').textContent = !bets.length ? '比賽結束' : net > 0 ? `🎉 贏了 ${net}！` : net === 0 ? '打平' : '😢 沒押中';
+    $('resTitle').textContent = !bets.length ? '比賽結束' : net > 0 ? `🎉 贏了 ${net}！` : net === 0 ? '打平' : won > 0 ? `有中，但輸 ${-net}` : '😢 沒押中';
     $('podium').innerHTML = race.ranking.slice(0, 3).map(m =>
       `<li><span class="sw" style="background:${hex(m.color)}"></span>${m.id + 1} 號 ${m.name}<span class="dim">　獨贏 ×${m.odds.win.toFixed(1)}</span></li>`).join('');
     $('payout').innerHTML = lines.join('') + `<div class="wallet">💰 現在有 <b>${coins}</b></div>`;
