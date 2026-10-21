@@ -453,7 +453,7 @@ export class View {
       const pos = [], uv = [], idx = [];
       const M = 17;
       for (let i = a; i <= b; i++) {
-        const prof = colliderProfile(t.half[i], WALL_H, t.rise[i]).slice(2, 2 + M);
+        const prof = colliderProfile(t.half[i], WALL_H, t.rise[i], t.pow[i]).slice(2, 2 + M);
         for (let k = 0; k < M; k++) {
           const [px, py] = prof[k];
           const P = t.P[i], R = t.R[i], U = t.U[i];
@@ -836,7 +836,7 @@ export class View {
     this._arch(t.gateI + 2, bannerTex('起跑 START', null, '#fff7e0', '#e8483f'));
     const look = { cross: ['小心被十字擋下來', '#e8483f'], piston: ['金色積木會把你彈去抄近路', '#35b45b'], pegs: ['彈來彈去看運氣', '#8e5bd6'], funnel: ['轉轉轉，一顆一顆掉下去', '#f07c2a'], zigzag: ['連續十個 180 度急轉彎', '#2f7de1'],
       minifunnel: ['三個小漏斗連著轉', '#f07c2a'], seesaw: ['左右左右掉下去', '#35b45b'],
-      fork: ['分成左右兩道再匯合', '#2a9d8f'], swing: ['左右擺盪的波浪賽道', '#e0559c'], water: ['進了水大家都變慢', '#2f7de1'] };
+      fork: ['分成左右兩道再匯合', '#2a9d8f'], sled: ['衝上高牆的雪橇 S 彎', '#e0559c'], water: ['進了水大家都變慢', '#2f7de1'] };
     const before = { funnel: 36, minifunnel: 8, seesaw: 26, fork: -8, water: -4 };   // 拱門放在入口前多遠，才不會擋住鏡頭
     t.zones.forEach((z, k) => this._arch(z.i0 - Math.round((before[z.type] || 0) / STEP), bannerTex(`${k + 1}. ${ZONE_INFO[z.type].name}`, look[z.type][0], look[z.type][1], '#ffffff')));
     this._arch(t.finishI, bannerTex('終點 FINISH', null, '#ffffff', '#111', true));

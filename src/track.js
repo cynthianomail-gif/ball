@@ -11,6 +11,7 @@ const FLOOR_SEGS = 16;
 
 // 指令：S 直線(長度, 坡度)  T 轉彎(角度, 半徑, 坡度，正=左轉)
 //       Z 障礙區(種類, 長度, 坡度)：直線上放一整區障礙
+//       B 雪橇彎道(坡度)：深 U 形賽道連續左右 S 彎，彎數與半徑見 SLED
 //       R 回程直線(長度, 坡度)：U 字迴轉後的直線，金色積木抄近路的落點
 //       F 漏斗(半徑, 深度, 洞口下方落差)：從邊緣切進去，繞圈掉進中間的洞，落到下面的賽道
 //       H 連發夾彎(彎數, 每段長, 彎道半徑, 坡度)：窄窄的木頭溝槽來回 180 度急轉
@@ -40,7 +41,7 @@ const PROGRAM = [
   ['T', 180, 14, 0.07],       // U 字迴轉
   ['R', 50, 0.05],            // 回程直線：金色積木抄近路會落在這裡
   ['T', -90, 16, 0.07],
-  ['Z', 'swing', 48, 0.07],   // 障礙區 7：波浪半管（賽道左右交替傾斜，彈珠來回擺盪）
+  ['B', 0.07],                // 障礙區 7：雪橇彎道（深 U 形截面、連續左右 S 彎，彈珠靠離心力衝上外側牆）
   ['Z', 'pegs', 46, 0.2],     // 障礙區 8：彈珠台（比較陡）
   ['T', -45, 16, 0.06],
   ['S', 8, 0.05],
@@ -59,7 +60,7 @@ export const ZONE_INFO = {
   minifunnel: { name: '連續小漏斗', icon: '🥣' },
   seesaw: { name: '蹺蹺板', icon: '⚖️' },
   fork: { name: '分岔匯流', icon: '🔀' },
-  swing: { name: '波浪半管', icon: '🛹' },
+  sled: { name: '雪橇彎道', icon: '🛷' },
   water: { name: '水底隧道', icon: '🌊' },
 };
 export const FUNNEL_HOLE = 1.1;        // 洞口半徑：比兩顆並排（直徑 2）再大一點，才不會兩顆互卡堵住
@@ -109,8 +110,10 @@ export function forkHalf(s) {
   if (s <= F.nose + F.body) return F.hw;
   return THREE.MathUtils.lerp(F.hw, F.tip, Math.min(1, (s - F.nose - F.body) / F.tail));
 }
-// 波浪半管：區內賽道左右交替傾斜（amp 最大傾角、period 一個來回多長）、地板兩側抬高到 rise，頭尾各 ramp 單位平滑過渡
-export const SWING = { amp: 0.22, period: 32, rise: 1.8, ramp: 6 };
+// 雪橇彎道：頭尾各 lead 單位直線，中間連續四個左右 S 彎（turns 角度，正=左轉；r 彎道半徑）
+// turns 對稱、淨轉向 0，連橫向位移也剛好抵消（cos(a-b) = 2cos(a)-1），後面的賽道只是往前縮一點（彎道走的路比直線短）
+// 截面變成深 U 形：地板兩側抬高到 rise（曲線指數 pow，2＝拋物線）、牆高 wall，在 lead 那段平滑過渡；彎道不傾斜，彈珠靠離心力自己爬上外側牆
+export const SLED = { lead: 5, turns: [30, -73, 73, -30], r: 10, rise: 3.4, wall: 5, pow: 2 };
 export const FUNNEL_LANE = 3.5;        // 進漏斗前賽道縮到這個半寬
 
 // 漏斗剖面：r 從洞口到邊緣，回傳往下的深度（0～1）。一半直線一半雙曲線，越靠中間越陡
@@ -155,19 +158,19 @@ function smooth(arr, radius, passes = 1) {
 }
 
 // 截面輪廓（局部座標 x=橫向, y=上），左牆外頂 → 地板 → 右牆外頂
-export function colliderProfile(hw, wh = WALL_H, rise = EDGE_RISE) {
+export function colliderProfile(hw, wh = WALL_H, rise = EDGE_RISE, pow = 3) {
   const pts = [[-hw - WALL_T, wh], [-hw, wh]];
   for (let k = 0; k <= FLOOR_SEGS; k++) {
     const x = -hw + (2 * hw * k) / FLOOR_SEGS;
-    pts.push([x, rise * Math.pow(Math.abs(x / hw), 3)]);
+    pts.push([x, rise * Math.pow(Math.abs(x / hw), pow)]);
   }
   pts.push([hw, wh], [hw + WALL_T, wh]);
   return pts;
 }
 
-export function floorHeightAt(lat, hw, rise = EDGE_RISE) {
+export function floorHeightAt(lat, hw, rise = EDGE_RISE, pow = 3) {
   const x = Math.min(1, Math.abs(lat / hw));
-  return rise * x * x * x;
+  return rise * Math.pow(x, pow);
 }
 
 export function buildTrack(seed = 7) {
@@ -240,6 +243,17 @@ export function buildTrack(seed = 7) {
       }
       straight();
       zoneRanges.push({ type: 'zigzag', i0, i1: xs.length - 1, dir, axis });
+    } else if (cmd[0] === 'B') {
+      // 頭尾各一段直線，中間連續左右 S 彎（彎道不算進 curv：不然會被自動傾斜，彈珠就爬不上外側牆）
+      const i0 = xs.length - 1;
+      const straight = () => { for (let i = 0, n = Math.round(SLED.lead / STEP); i < n; i++) { x += Math.cos(h) * STEP; z -= Math.sin(h) * STEP; y -= cmd[1] * STEP; push(0); } };
+      straight();
+      for (const deg of SLED.turns) {
+        const ang = THREE.MathUtils.degToRad(deg), n = Math.round(Math.abs(ang) * SLED.r / STEP), dh = ang / n;
+        for (let i = 0; i < n; i++) { h += dh; x += Math.cos(h) * STEP; z -= Math.sin(h) * STEP; y -= cmd[1] * STEP; push(0); }
+      }
+      straight();
+      zoneRanges.push({ type: 'sled', i0, i1: xs.length - 1 });
     } else if (cmd[0] === 'R') {
       const i0 = xs.length - 1;
       const n = Math.round(cmd[1] / STEP);
@@ -285,14 +299,8 @@ export function buildTrack(seed = 7) {
     const raw = curv.slice(z.i0, z.i1 + 1).map(k => THREE.MathUtils.clamp(k * 11, -ZIGZAG_BANK, ZIGZAG_BANK));
     smooth(raw, 3, 2).forEach((b, k) => { bank[z.i0 + k] = b; });
   }
-  // 波浪半管：傾斜角用正弦左右交替，頭尾各 ramp 單位平滑接回原本的傾斜（地板抬高也用同一個 swingEase）
-  const swingEase = (z, i) => { const n = Math.round(SWING.ramp / STEP), k = Math.min(1, (i - z.i0) / n, (z.i1 - i) / n); return k * k * (3 - 2 * k); };
-  for (const z of zoneRanges) if (z.type === 'swing') {
-    for (let i = z.i0; i <= z.i1; i++) {
-      const e = swingEase(z, i);
-      bank[i] = bank[i] * (1 - e) + SWING.amp * e * Math.sin(2 * Math.PI * (i - z.i0) * STEP / SWING.period);
-    }
-  }
+  // 雪橇彎道的截面（地板抬高、牆加高）在頭尾各 lead 單位的直線上平滑過渡
+  const sledEase = (z, i) => { const n = Math.round(SLED.lead / STEP), k = Math.min(1, (i - z.i0) / n, (z.i1 - i) / n); return k * k * (3 - 2 * k); };
 
   // 2. 寬度
   const total = (N - 1) * STEP;
@@ -309,6 +317,9 @@ export function buildTrack(seed = 7) {
   }
   // 夾彎溝槽變窄（前後 10 單位慢慢收窄、放寬，彈珠才會乖乖排成一列進去），牆也變矮，像木板上挖出來的溝
   const wallH = new Float32Array(N).fill(WALL_H);
+  for (const z of zoneRanges) if (z.type === 'sled') {
+    for (let i = z.i0; i <= z.i1; i++) wallH[i] = THREE.MathUtils.lerp(WALL_H, SLED.wall, sledEase(z, i));
+  }
   for (const z of zoneRanges) if (z.type === 'zigzag') {
     const n = Math.round(10 / STEP);
     for (let i = z.i0 - n; i <= z.i1 + n; i++) {
@@ -345,6 +356,7 @@ export function buildTrack(seed = 7) {
 
   // 跳跳積木那段地板幾乎是平的，四塊積木才能鋪滿整個跑道寬
   const rise = new Float32Array(N).fill(EDGE_RISE);
+  const pow = new Float32Array(N).fill(3);   // 地板曲線指數
   for (const z of zoneRanges) if (z.type === 'piston') {
     const n = Math.round(6 / STEP);
     for (let i = z.i0 - n; i <= z.i1 + n; i++) {
@@ -352,9 +364,13 @@ export function buildTrack(seed = 7) {
       rise[i] = THREE.MathUtils.lerp(PISTON_RISE, EDGE_RISE, k);
     }
   }
-  // 波浪半管兩側地板抬高，彈珠擺過去會被弧面推回來
-  for (const z of zoneRanges) if (z.type === 'swing') {
-    for (let i = z.i0; i <= z.i1; i++) rise[i] = THREE.MathUtils.lerp(EDGE_RISE, SWING.rise, swingEase(z, i));
+  // 雪橇彎道兩側地板抬高成深 U 形，彈珠衝上外側牆會被弧面推回來
+  for (const z of zoneRanges) if (z.type === 'sled') {
+    for (let i = z.i0; i <= z.i1; i++) {
+      const e = sledEase(z, i);
+      rise[i] = THREE.MathUtils.lerp(EDGE_RISE, SLED.rise, e);
+      pow[i] = THREE.MathUtils.lerp(3, SLED.pow, e);
+    }
   }
 
   // 3. 座標系
@@ -484,7 +500,7 @@ export function buildTrack(seed = 7) {
     const idx = [];
     let v = 0;
     for (let i = a; i <= b; i++) {
-      const prof = colliderProfile(half[i], wallH[i], rise[i]);
+      const prof = colliderProfile(half[i], wallH[i], rise[i], pow[i]);
       for (const [px, py] of prof) {
         verts[v++] = P[i].x + R[i].x * px + U[i].x * py;
         verts[v++] = P[i].y + R[i].y * px + U[i].y * py;
@@ -501,7 +517,7 @@ export function buildTrack(seed = 7) {
   });
 
   return {
-    N, P, T, R, U, half, wallH, rise, floor, ranges, total,
+    N, P, T, R, U, half, wallH, rise, pow, floor, ranges, total,
     gateI, finishI, checkpoints, zones, shortcuts, funnels, towers, segStart, colliders: [...colliders, ...funnels.flatMap(f => [f.cone, f.wallMesh])],
     startI: 0, endI: N - 1,
   };

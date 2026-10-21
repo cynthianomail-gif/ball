@@ -161,8 +161,8 @@ export class Race {
     }
     this.pistonZone = track.zones.find(z => z.type === 'piston');
     this.waterZone = track.zones.find(z => z.type === 'water');
-    // 彈珠台、夾彎、分岔、波浪半管、水底隧道裡沒有 AI，只靠重力（夾彎裡 AI 會一直往彎道牆上撞；水裡 AI 的推力會把實力差放大成速度差）
-    this.freeZones = track.zones.filter(z => ['pegs', 'zigzag', 'fork', 'swing', 'water'].includes(z.type));
+    // 彈珠台、夾彎、分岔、雪橇彎道、水底隧道裡沒有 AI，只靠重力（夾彎裡 AI 會一直往彎道牆上撞；水裡 AI 的推力會把實力差放大成速度差）
+    this.freeZones = track.zones.filter(z => ['pegs', 'zigzag', 'fork', 'sled', 'water'].includes(z.type));
 
     // 檢查點：每過一個淘汰 elimRate（預設 20%）
     this.cps = track.checkpoints.map((i, k) => ({
@@ -192,7 +192,7 @@ export class Race {
       const s = track.gateI * STEP - 2.5 - r * 1.6;
       const i = Math.round(s / STEP);
       const lat = (c - (cols - 1) / 2) * 1.35;
-      const fh = floorHeightAt(lat, track.half[i], track.rise[i]);
+      const fh = floorHeightAt(lat, track.half[i], track.rise[i], track.pow[i]);
       const p = trackPoint(track, i, lat, fh + RADIUS + 0.05);
       const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(p.x, p.y, p.z)
         .setCcdEnabled(true).setLinearDamping(BASE_DAMP).setAngularDamping(0.4));
@@ -675,7 +675,7 @@ export class Race {
     let i = Math.max(1, m.safeIdx - 8);
     while (i > 1 && !t.floor[i]) i--;
     const lat = (this.rand() * 2 - 1) * 0.3 * t.half[i];
-    const p = trackPoint(t, i, lat, floorHeightAt(lat, t.half[i], t.rise[i]) + RADIUS + 1.0);
+    const p = trackPoint(t, i, lat, floorHeightAt(lat, t.half[i], t.rise[i], t.pow[i]) + RADIUS + 1.0);
     m.body.setTranslation(p, true);
     const tv = t.T[i];
     m.body.setLinvel({ x: tv.x * 7, y: tv.y * 7, z: tv.z * 7 }, true);
