@@ -11,6 +11,7 @@ const FLOOR_SEGS = 16;
 // 指令：S 直線(長度, 坡度)  T 轉彎(角度, 半徑, 坡度，正=左轉)  J 跳台(缺口長度)
 //       Z 障礙區(種類, 長度, 坡度)：直線上放一整區障礙
 //       R 回程直線(長度, 坡度)：U 字迴轉後的直線，金色積木抄近路的落點
+//       F 漏斗(半徑, 深度, 洞口下方落差)：從邊緣切進去，繞圈掉進中間的洞，落到下面的賽道
 // 坡度為每單位長度下降量
 const PROGRAM = [
   ['S', 52, 0.015],     // 起跑區
@@ -38,7 +39,9 @@ const PROGRAM = [
   ['T', -120, 25, 0.06],
   ['Z', 'pegs', 46, 0.2],     // 障礙區 3：彈珠台（比較陡）
   ['T', -60, 30, 0.05],
-  ['S', 30, 0.05],
+  ['S', 16, 0.05],      // 漏斗前賽道慢慢變窄
+  ['F', 14, 5, 5],            // 障礙區 4：漏斗
+  ['S', 22, 0.04],
   ['S', 40, 0.0],       // 終點收集區
 ];
 
@@ -46,12 +49,22 @@ export const ZONE_INFO = {
   cross: { name: '旋轉十字', icon: '✚' },
   piston: { name: '跳跳積木', icon: '🧱' },
   pegs: { name: '彈珠台', icon: '📍' },
+  funnel: { name: '漏斗', icon: '🌀' },
 };
+export const FUNNEL_HOLE = 0.95;       // 洞口半徑（彈珠半徑 0.5，一次只過得了一顆）
+export const FUNNEL_LANE = 3.5;        // 進漏斗前賽道縮到這個半寬
+
+// 漏斗剖面：r 從洞口到邊緣，回傳往下的深度（0～1）。一半直線一半雙曲線，越靠中間越陡
+export function funnelDepth(r, R) {
+  const a = (R - r) / (R - FUNNEL_HOLE);
+  const b = (R / r - 1) / (R / FUNNEL_HOLE - 1);
+  return 0.4 * a + 0.6 * b;
+}
 
 const GOLD_ROWS = [3, 7, 11, 15];  // 哪幾列的左邊兩排積木是金色的
 const SHORTCUT_AHEAD = -8;        // 落點在回程直線上、積木正對面再往前多遠（負的＝往回一點）
 
-const START = new THREE.Vector3(-105, 70, 95);
+const START = new THREE.Vector3(-105, 79, 95);
 const START_HEADING = 0; // 朝 +x
 
 export function mulberry32(seed) {
@@ -106,9 +119,31 @@ export function buildTrack(seed = 7) {
   push(0);
   const gaps = [];
   const zoneRanges = [];
+  const funnels = [];
+  const breaks = new Set();   // i 和 i+1 之間不相連（漏斗洞口的垂直落差）
   let returnRange = null;
   for (const cmd of PROGRAM) {
-    if (cmd[0] === 'R') {
+    if (cmd[0] === 'F') {
+      // 漏斗中心在賽道左手邊；賽道末端架在漏斗邊牆上方，彈珠順著切線方向掉進去
+      const [, Rf, depth, drop] = cmd;
+      const i0 = xs.length - 1;
+      const yRim = y - (WALL_H + BEAM + 0.6);
+      const lx = -Math.sin(h), lz = -Math.cos(h);
+      const off = Rf - FUNNEL_LANE - 1.2;
+      const cx = x + lx * off, cz = z + lz * off;
+      // 漏斗裡沒有賽道，用一條從入口到洞口的線當「進度」參考
+      const x0 = x, z0 = z, y0 = y, n = Math.round(off / STEP);
+      for (let i = 1; i <= n; i++) {
+        x = x0 + (cx - x0) * i / n; z = z0 + (cz - z0) * i / n; y = y0 + (yRim - depth - y0) * i / n; push(0, 2);
+      }
+      const i1 = xs.length - 1;
+      breaks.add(i1);
+      // 出口賽道從洞口正下方、往後 2 單位開始，彈珠掉下來才接得住
+      x = cx - Math.cos(h) * 2; z = cz + Math.sin(h) * 2; y = yRim - depth - drop;
+      push(0);
+      funnels.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], R: Rf, depth, yRim, yHole: yRim - depth });
+      zoneRanges.push({ type: 'funnel', i0, i1 });
+    } else if (cmd[0] === 'R') {
       const i0 = xs.length - 1;
       const n = Math.round(cmd[1] / STEP);
       for (let i = 0; i < n; i++) {
@@ -148,9 +183,12 @@ export function buildTrack(seed = 7) {
   }
 
   const N = xs.length;
-  const ySm = smooth(ys, 4, 2);
-  // 缺口區維持原高度（避免平滑把落差抹掉）
+  // 高度分段平滑：漏斗入口和洞口兩邊各自平滑，不要互相拉扯（不然會在入口前或出口後做出小台階）
+  const cuts = [0, ...funnels.flatMap(f => [f.i0 + 1, f.i1 + 1]), N];
+  const ySm = [];
+  for (let k = 0; k + 1 < cuts.length; k++) ySm.push(...smooth(ys.slice(cuts[k], cuts[k + 1]), 4, 2));
   for (const [a, b] of gaps) for (let i = a - 2; i <= b + 2; i++) ySm[i] = ys[i];
+  for (const f of funnels) for (let i = f.i0 + 1; i <= f.i1; i++) ySm[i] = ys[i];
   const bank = smooth(curv.map(k => THREE.MathUtils.clamp(k * 11, -0.4, 0.4)), 16, 3);
 
   // 2. 寬度
@@ -164,13 +202,19 @@ export function buildTrack(seed = 7) {
     if (s > total - 46) w = THREE.MathUtils.lerp(5.5, 8.5, Math.min(1, (s - (total - 46)) / 12));
     half[i] = w;
   }
+  for (const f of funnels) {
+    const n = Math.round(14 / STEP);
+    for (let k = 0; k <= n; k++) half[f.i0 - k] = Math.min(half[f.i0 - k], THREE.MathUtils.lerp(FUNNEL_LANE, 5.5, k / n));
+    for (let i = f.i0 + 1; i <= f.i1; i++) half[i] = f.R;
+  }
 
   // 3. 座標系
   const P = [], T = [], R = [], U = [];
   const up = new THREE.Vector3(0, 1, 0);
   for (let i = 0; i < N; i++) P.push(new THREE.Vector3(xs[i], ySm[i], zs[i]));
   for (let i = 0; i < N; i++) {
-    const a = P[Math.max(0, i - 1)], b = P[Math.min(N - 1, i + 1)];
+    // 斷開的地方只看同一側的鄰點
+    const a = P[i > 0 && !breaks.has(i - 1) ? i - 1 : i], b = P[i < N - 1 && !breaks.has(i) ? i + 1 : i];
     const t = b.clone().sub(a).normalize();
     const r0 = t.clone().cross(up).normalize();
     const u0 = r0.clone().cross(t).normalize();
@@ -179,6 +223,10 @@ export function buildTrack(seed = 7) {
     const u = u0.clone().multiplyScalar(Math.cos(bk)).addScaledVector(r0, -Math.sin(bk));
     T.push(t); R.push(r); U.push(u);
   }
+
+  // 每一點所在的連續段起點（漏斗洞口把賽道切成上下兩段）
+  const segStart = new Int32Array(N);
+  for (let i = 1; i < N; i++) segStart[i] = breaks.has(i - 1) ? i : segStart[i - 1];
 
   const floor = new Uint8Array(N).fill(1);
   for (let i = 0; i < N; i++) if (gapFlag[i]) floor[i] = 0;
@@ -201,6 +249,7 @@ export function buildTrack(seed = 7) {
 
   // 6. 三個障礙區
   const zones = zoneRanges.map(z => {
+    if (z.type === 'funnel') return { ...z, s0: z.i0 * STEP, s1: z.i1 * STEP, crosses: [], pistons: [], pegs: [], funnel: funnels.find(f => f.i0 === z.i0) };
     const len = (z.i1 - z.i0) * STEP;
     const at = d => z.i0 + Math.round(d / STEP);
     const zone = { ...z, s0: z.i0 * STEP, s1: z.i1 * STEP, crosses: [], pistons: [], pegs: [] };
@@ -225,6 +274,30 @@ export function buildTrack(seed = 7) {
     }
     return zone;
   });
+
+  // 6a. 漏斗幾何：錐面（中間開洞）＋邊緣的牆（入口那段不蓋）
+  for (const f of funnels) {
+    const [cx, cz] = f.c, RINGS = 22, SEG = 64;
+    const pt = (r, a, dy = 0) => [cx + Math.cos(a) * r, f.yRim - f.depth * funnelDepth(r, f.R) + dy, cz + Math.sin(a) * r];
+    const cone = [], cIdx = [];
+    for (let k = 0; k <= RINGS; k++) {
+      const r = FUNNEL_HOLE + (f.R - FUNNEL_HOLE) * Math.pow(k / RINGS, 1.6);   // 越靠中間切越細
+      for (let j = 0; j <= SEG; j++) cone.push(...pt(r, j / SEG * Math.PI * 2));
+    }
+    for (let k = 0; k < RINGS; k++) for (let j = 0; j < SEG; j++) {
+      const A = k * (SEG + 1) + j, B = A + 1, C = A + SEG + 1, D = C + 1;
+      cIdx.push(A, B, C, B, D, C);          // 法線朝上（這種碰撞網格只有正面擋得住）
+    }
+    // 邊牆整圈都有（入口賽道從牆上方經過）
+    const wall = [], wIdx = [];
+    for (let j = 0; j < SEG; j++) {
+      const a0 = j / SEG * Math.PI * 2, a1 = (j + 1) / SEG * Math.PI * 2, b = wall.length / 3;
+      wall.push(...pt(f.R, a0, -0.2), ...pt(f.R, a1, -0.2), ...pt(f.R, a0, WALL_H), ...pt(f.R, a1, WALL_H));
+      wIdx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);   // 法線朝漏斗內
+    }
+    f.cone = { vertices: new Float32Array(cone), indices: new Uint32Array(cIdx), rings: RINGS, seg: SEG };
+    f.wall = { vertices: new Float32Array(wall), indices: new Uint32Array(wIdx) };
+  }
 
   // 6b. 金色積木抄近路：從積木飛到回程直線上、往前一點的地方
   const shortcuts = [];
@@ -267,7 +340,7 @@ export function buildTrack(seed = 7) {
 
   return {
     N, P, T, R, U, half, floor, ranges, gaps, total,
-    gateI, finishI, checkpoints, zones, shortcuts, colliders,
+    gateI, finishI, checkpoints, zones, shortcuts, funnels, segStart, colliders: [...colliders, ...funnels.flatMap(f => [f.cone, f.wall])],
     startI: 0, endI: N - 1,
   };
 }

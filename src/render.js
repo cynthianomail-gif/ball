@@ -1,7 +1,8 @@
 // 3D 畫面：臥室、積木賽道、彈珠、鏡頭
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { STEP, WALL_H, WALL_T, BEAM, EDGE_RISE, colliderProfile, trackPoint, trackQuat, floorHeightAt, mulberry32, ZONE_INFO } from './track.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { STEP, WALL_H, WALL_T, BEAM, EDGE_RISE, colliderProfile, trackPoint, trackQuat, floorHeightAt, mulberry32, ZONE_INFO, FUNNEL_HOLE } from './track.js';
 import { RADIUS, PISTON, PEG_R, goldLit } from './sim.js';
 
 const TOY = [0xe8483f, 0xf6b929, 0x2f7de1, 0x35b45b, 0xf07c2a, 0x8e5bd6];
@@ -117,9 +118,10 @@ export class View {
     const mobile = matchMedia('(pointer: coarse)').matches;
     this.mobile = mobile;
     const r = this.renderer = new THREE.WebGLRenderer({ canvas, antialias: !mobile, powerPreference: 'high-performance' });
-    const maxPr = Math.min(devicePixelRatio, mobile ? 1.5 : 2);
-    this.quality = { pr: maxPr, max: maxPr, min: Math.min(maxPr, mobile ? 0.75 : 1), ema: 1 / 60, timer: 0 };
-    r.setPixelRatio(maxPr);
+    // 手機先從 1.25 倍開始，順的話再慢慢調到 1.5
+    const maxPr = Math.min(devicePixelRatio, mobile ? 1.5 : 2), startPr = Math.min(maxPr, mobile ? 1.25 : 2);
+    this.quality = { pr: startPr, ceil: maxPr + 0.01, min: Math.min(startPr, mobile ? 0.75 : 1), ema: 1 / 60, timer: 0, fps: 60 };
+    r.setPixelRatio(startPr);
     r.toneMapping = THREE.ACESFilmicToneMapping;
     r.toneMappingExposure = 1.05;
     r.shadowMap.enabled = true;
@@ -139,6 +141,10 @@ export class View {
     this.camFwd = new THREE.Vector3(1, 0, 0);
     this.camLook = new THREE.Vector3();
     this.camTarget = new THREE.Vector3();
+    // 每幀重複使用的暫存物件（少產生垃圾，手機上比較不會突然頓一下）
+    this._tp = new THREE.Vector3(); this._tq = new THREE.Quaternion(); this._tm = new THREE.Matrix4();
+    this._one = new THREE.Vector3(1, 1, 1); this._yAxis = new THREE.Vector3(0, 1, 0);
+    this._fwd = new THREE.Vector3(); this._desired = new THREE.Vector3(); this._look = new THREE.Vector3(); this._proj = new THREE.Vector3();
     this._aim = new THREE.Vector3();
     this._want = new THREE.Vector3();
     this.camInit = false;
@@ -158,6 +164,7 @@ export class View {
     this._buildTrack();
     this._buildObstacles();
     this._buildArches();
+    this._mergeStatic();
     this.marbleGroup = new THREE.Group();
     scene.add(this.marbleGroup);
 
@@ -172,18 +179,35 @@ export class View {
   }
 
   // 動態解析度：跑不動就降低渲染解析度，順了再慢慢調回來
+  // 跑不動的解析度記下來（ceil），之後不再調回去，避免高低來回切換反而一頓一頓的
   adaptQuality(frameDt) {
     if (frameDt > 0.25) return;            // 切到背景回來的那一幀不算
     const q = this.quality;
     q.ema += (frameDt - q.ema) * 0.05;
+    q.fps = 1 / q.ema;
     q.timer += frameDt;
-    if (q.timer < 1.5) return;
-    let pr = q.pr;
-    if (q.ema > 1 / 45 && pr > q.min) pr = Math.max(q.min, pr - 0.25);
-    else if (q.ema < 1 / 57 && pr < q.max && q.timer > 4) pr = Math.min(q.max, pr + 0.25);
-    else if (q.ema < 1 / 57) return;      // 順了也要等久一點才調高
-    q.timer = 0;
-    if (pr !== q.pr) { q.pr = pr; this.renderer.setPixelRatio(pr); this.resize(); }
+    if (q.timer < 2) return;
+    if (q.ema > 1 / 45) {
+      q.timer = 0;
+      q.ceil = q.pr;
+      if (q.pr > q.min) this._setPixelRatio(Math.max(q.min, q.pr - 0.25));
+      else if (this.renderer.shadowMap.enabled) this._disableShadows();   // 解析度降到底還是卡：關掉陰影
+    } else if (q.ema < 1 / 57 && q.timer > 8 && q.pr + 0.25 < q.ceil) {
+      q.timer = 0;
+      this._setPixelRatio(q.pr + 0.25);
+    }
+  }
+
+  _setPixelRatio(pr) {
+    this.quality.pr = pr;
+    this.renderer.setPixelRatio(pr);
+    this.resize();
+  }
+
+  _disableShadows() {
+    this.renderer.shadowMap.enabled = false;
+    this.sun.castShadow = false;
+    this.scene.traverse(o => { if (o.material) for (const m of [].concat(o.material)) m.needsUpdate = true; });
   }
 
   resize() {
@@ -335,9 +359,60 @@ export class View {
       const x = x0 + 15 + r() * (W - 30), z = z0 + 15 + r() * (D - 30);
       if (this._trackBlocked(x - s, x + s, z - s, z + s, s + 2) || this._overlapsProps(x - s, x + s, z - s, z + s)) continue;
       const col = TOY[Math.floor(r() * TOY.length)];
-      const m = this._box(s, s, s, new THREE.MeshStandardMaterial({ map: letterTex(String.fromCharCode(65 + Math.floor(r() * 26)), col), roughness: 0.5 }), x, s / 2, z);
+      const ch = String.fromCharCode(65 + Math.floor(r() * 26));
+      const m = this._box(s, s, s, new THREE.MeshStandardMaterial({ map: letterTex(ch, col), roughness: 0.5 }), x, s / 2, z);
       m.rotation.y = r() * Math.PI;
+      m.userData.letter = [ch, col];       // 之後合併成一張貼圖集
     }
+  }
+
+  // 把不會動的方塊合併成少數幾個網格：手機上 draw call 少很多，才不會卡
+  _mergeStatic() {
+    this.scene.updateMatrixWorld(true);
+    const plain = [], letters = [];
+    const moving = new Set([this.gateMesh]);
+    this.scene.traverse(o => {
+      if (!o.isMesh || o.isInstancedMesh || moving.has(o) || !o.geometry.isBufferGeometry || o.geometry.type !== 'BoxGeometry') return;
+      if (o.userData.letter) letters.push(o);
+      else if (!Array.isArray(o.material) && o.material.isMeshStandardMaterial && !o.material.map) plain.push(o);
+    });
+    const bake = (o, extra) => {
+      const g = o.geometry.clone().applyMatrix4(o.matrixWorld);
+      extra(g);
+      return g;
+    };
+    // 純色方塊：顏色寫進頂點，一個材質畫完
+    const plainGeo = mergeGeometries(plain.map(o => bake(o, g => {
+      const c = o.material.color, n = g.attributes.position.count, col = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) col.set([c.r, c.g, c.b], i * 3);
+      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    })));
+    const plainMesh = new THREE.Mesh(plainGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6 }));
+    plainMesh.castShadow = plainMesh.receiveShadow = true;
+    // 字母積木：所有字母畫在同一張貼圖集上
+    const keys = [...new Set(letters.map(o => o.userData.letter.join()))];
+    const cols = Math.ceil(Math.sqrt(keys.length)), rows = Math.ceil(keys.length / cols), TS = 128;
+    const atlas = canvasTex(cols * TS, rows * TS, g => {
+      keys.forEach((k, n) => {
+        const [ch, col] = k.split(','), x = (n % cols) * TS, y = Math.floor(n / cols) * TS;
+        g.fillStyle = '#' + Number(col).toString(16).padStart(6, '0'); g.fillRect(x, y, TS, TS);
+        g.strokeStyle = 'rgba(255,255,255,0.55)'; g.lineWidth = 8; g.strokeRect(x + 10, y + 10, TS - 20, TS - 20);
+        g.fillStyle = '#fff'; g.font = 'bold 76px Arial Black, Arial'; g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(ch, x + TS / 2, y + TS / 2 + 4);
+      });
+    });
+    const letterGeo = mergeGeometries(letters.map(o => bake(o, g => {
+      const n = keys.indexOf(o.userData.letter.join()), cx = n % cols, cy = Math.floor(n / cols), uv = g.attributes.uv;
+      for (let i = 0; i < uv.count; i++) {
+        // 每格內縮一點，避免縮圖時吃到隔壁的顏色
+        const u = 0.03 + uv.getX(i) * 0.94, v = 0.03 + uv.getY(i) * 0.94;
+        uv.setXY(i, (cx + u) / cols, 1 - (cy + 1 - v) / rows);
+      }
+    })));
+    const letterMesh = new THREE.Mesh(letterGeo, new THREE.MeshStandardMaterial({ map: atlas, roughness: 0.5 }));
+    letterMesh.castShadow = letterMesh.receiveShadow = true;
+    for (const o of [...plain, ...letters]) { o.removeFromParent(); o.geometry.dispose(); if (!Array.isArray(o.material)) { o.material.map?.dispose(); o.material.dispose(); } }
+    this.scene.add(plainMesh, letterMesh);
   }
 
   _overlapsProps(a0, a1, b0, b1) {
@@ -481,8 +556,9 @@ export class View {
     this.pistonGroups = TOY.map((col, k) => group(
       pistons.map((p, n) => p.color === k && !p.gold ? n : -1).filter(n => n >= 0),
       new THREE.MeshStandardMaterial({ map: letterTex('ABCDEF'[k], col), roughness: 0.45 })));
-    this.ringSmall = new THREE.RingGeometry(0.32, 0.5, 32);
-    this.ringBig = new THREE.RingGeometry(0.72, 0.9, 40);
+    // 一大一小兩個光圈合成一個網格（大的稍微高一點）
+    const flatRing = (r0, r1, y) => new THREE.RingGeometry(r0, r1, 36).rotateX(-Math.PI / 2).translate(0, y, 0);
+    this.ringGeo = mergeGeometries([flatRing(0.32, 0.5, 0), flatRing(0.72, 0.9, 0.25)]);
     // 金色積木：同一列一起閃，每列一組材質
     const goldTex = letterTex('★', 0xe0a000);
     const goldRows = [...new Set(pistons.filter(p => p.gold).map(p => p.row))];
@@ -492,17 +568,12 @@ export class View {
       this.pistonGroups.push(g);
       // 亮的時候積木上方浮著一大一小兩個金色光圈（彈跳墊的樣子）
       const ringMat = new THREE.MeshBasicMaterial({ color: 0xffae00, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide });
-      const flat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
       const rings = g.ids.map(n => {
         const pc = pistons[n];
-        const grp = new THREE.Group();
-        const small = new THREE.Mesh(this.ringSmall, ringMat), big = new THREE.Mesh(this.ringBig, ringMat);
-        big.position.y = 0.25;
-        grp.add(small, big);
+        const grp = new THREE.Mesh(this.ringGeo, ringMat);
         grp.quaternion.copy(trackQuat(t, pc.i));
-        small.quaternion.copy(flat); big.quaternion.copy(flat);
         this.scene.add(grp);
-        return { grp, small, big, id: n };
+        return { grp, id: n };
       });
       return { ...g, row, ringMat, rings };
     });
@@ -520,6 +591,44 @@ export class View {
     });
     pinMesh.castShadow = capMesh.castShadow = true;
     this.scene.add(pinMesh, capMesh);
+
+    // 漏斗：木頭錐面、彩色積木邊牆、底下幾根柱子
+    for (const f of t.funnels) {
+      const { vertices, indices, rings, seg } = f.cone;
+      const uv = [];
+      for (let k = 0; k <= rings; k++) for (let j = 0; j <= seg; j++) uv.push(j / seg * 8, k / rings * 3);
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+      g.setIndex(new THREE.BufferAttribute(indices, 1)); g.computeVertexNormals();
+      const cone = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: woodTex([224, 186, 132], 4, 8), roughness: 0.45, side: THREE.DoubleSide }));
+      cone.receiveShadow = true; cone.castShadow = true;
+      this.scene.add(cone);
+      const stripes = canvasTex(512, 32, (gc, w, h) => { TOY.forEach((c, k) => { gc.fillStyle = '#' + c.toString(16).padStart(6, '0'); for (let x = k * 32; x < w; x += 32 * TOY.length) gc.fillRect(x, 0, 32, h); }); }, true);
+      stripes.repeat.set(3, 1);
+      const wallMat = new THREE.MeshStandardMaterial({ map: stripes, roughness: 0.5, side: THREE.DoubleSide });
+      const H = WALL_H + 0.2, y0 = f.yRim - 0.2;
+      for (const r of [f.R, f.R + WALL_T]) {
+        const w = new THREE.Mesh(new THREE.CylinderGeometry(r, r, H, 64, 1, true), wallMat);
+        w.position.set(f.c[0], y0 + H / 2, f.c[1]); w.castShadow = true; this.scene.add(w);
+      }
+      const top = new THREE.Mesh(new THREE.RingGeometry(f.R, f.R + WALL_T, 64), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, side: THREE.DoubleSide }));
+      top.rotation.x = -Math.PI / 2; top.position.set(f.c[0], y0 + H, f.c[1]); this.scene.add(top);
+      // 洞口一圈紅邊，看得出彈珠從哪裡掉下去
+      const lip = new THREE.Mesh(new THREE.TorusGeometry(FUNNEL_HOLE + 0.08, 0.08, 8, 32), new THREE.MeshStandardMaterial({ color: 0xe8483f }));
+      lip.rotation.x = Math.PI / 2; lip.position.set(f.c[0], f.yHole + 0.05, f.c[1]); this.scene.add(lip);
+      // 柱子：不要插到底下的賽道
+      const pillarMat = new THREE.MeshStandardMaterial({ color: 0xf6b929, roughness: 0.5 });
+      for (let k = 0; k < 6; k++) {
+        const a = k / 6 * Math.PI * 2 + 0.3, px = f.c[0] + Math.cos(a) * (f.R + 0.35), pz = f.c[1] + Math.sin(a) * (f.R + 0.35);
+        let blocked = false;
+        for (let i = 0; i < t.N; i += 2) if (t.P[i].y < f.yRim && Math.hypot(t.P[i].x - px, t.P[i].z - pz) < t.half[i] + 3) { blocked = true; break; }
+        if (blocked) continue;
+        const ph = f.yRim - 0.2;
+        const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.9, ph, 12), pillarMat);
+        pillar.position.set(px, ph / 2, pz); pillar.castShadow = true; this.scene.add(pillar);
+      }
+    }
 
     // 起跑閘門
     const gi = t.gateI;
@@ -554,8 +663,8 @@ export class View {
   _buildArches() {
     const t = this.track;
     this._arch(t.gateI + 2, bannerTex('起跑 START', null, '#fff7e0', '#e8483f'));
-    const look = { cross: ['小心被十字擋下來', '#e8483f'], piston: ['金色積木會把你彈去抄近路', '#35b45b'], pegs: ['彈來彈去看運氣', '#8e5bd6'] };
-    t.zones.forEach((z, k) => this._arch(z.i0, bannerTex(`${k + 1}. ${ZONE_INFO[z.type].name}`, look[z.type][0], look[z.type][1], '#ffffff')));
+    const look = { cross: ['小心被十字擋下來', '#e8483f'], piston: ['金色積木會把你彈去抄近路', '#35b45b'], pegs: ['彈來彈去看運氣', '#8e5bd6'], funnel: ['轉轉轉，一顆一顆掉下去', '#f07c2a'] };
+    t.zones.forEach((z, k) => this._arch(z.type === 'funnel' ? z.i0 - Math.round(16 / STEP) : z.i0, bannerTex(`${k + 1}. ${ZONE_INFO[z.type].name}`, look[z.type][0], look[z.type][1], '#ffffff')));
     this._arch(t.finishI, bannerTex('終點 FINISH', null, '#ffffff', '#111', true));
   }
 
@@ -611,7 +720,7 @@ export class View {
 
   render(alpha, dt) {
     const race = this.race;
-    const _p = new THREE.Vector3(), _q = new THREE.Quaternion();
+    const _p = this._tp, _q = this._tq;
     race.marbles.forEach((m, k) => {
       const mesh = this.meshes[k];
       if (m.alive) {
@@ -631,7 +740,7 @@ export class View {
       this.crossMeshes[k].position.copy(b.translation());
       this.crossMeshes[k].quaternion.copy(b.rotation());
     }
-    const m4 = new THREE.Matrix4(), one = new THREE.Vector3(1, 1, 1);
+    const m4 = this._tm, one = this._one;
     for (const { mesh, ids } of this.pistonGroups) {
       ids.forEach((id, k) => {
         const b = race.pistons[id].body;
@@ -652,7 +761,7 @@ export class View {
         if (!lit) continue;
         const b = race.pistons[r.id].body, uv = this.track.U[race.pistons[r.id].i];
         r.grp.position.copy(b.translation()).addScaledVector(uv, PISTON.size + 0.08 + bounce * 0.7);
-        r.big.scale.setScalar(1 + bounce * 0.15);
+        r.grp.scale.setScalar(1 + bounce * 0.12);
       }
     }
     if (race.phase === 'race' && this.gateMesh.visible) {
@@ -664,8 +773,10 @@ export class View {
     // 跟領先者時對準賽道中線，換人領先鏡頭也不會跳；跟某顆彈珠時對準牠
     const fm = this.focusMarble();
     const t = this.track;
+    // 在漏斗裡跟領先者時，直接看漏斗中心，大家繞圈都看得到
     const aim = this.focusId >= 0 && fm.id === this.focusId
       ? this.meshes[fm.id].position
+      : fm.funnel ? this._aim.set(fm.funnel.c[0], fm.funnel.yHole + 1, fm.funnel.c[1])
       : trackPoint(t, Math.min(t.N - 1, Math.round(fm.maxS / STEP)), 0, RADIUS, this._aim);
     // 目標點平滑跟隨，上下彈跳跟得更慢，畫面才不會跟著抖
     const target = this.camTarget;
@@ -677,15 +788,15 @@ export class View {
     for (let d = 4; d <= 24; d += 4) { const tt = t.T[Math.min(t.N - 1, fm.idx + d)]; want.x += tt.x; want.z += tt.z; }
     want.normalize();
     if (!this.camInit) this.camFwd.copy(want);
-    this.camFwd.lerp(want, 1 - Math.exp(-dt * 2)).normalize();
+    if (!fm.funnel) this.camFwd.lerp(want, 1 - Math.exp(-dt * 2)).normalize();   // 漏斗裡方向固定，不跟著轉
     if (!this.dragging) this.yawOffset *= Math.exp(-dt * 1.2);
-    const fwd = this.camFwd.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yawOffset);
+    const fwd = this._fwd.copy(this.camFwd).applyAxisAngle(this._yAxis, this.yawOffset);
     this.viewFwd = fwd;
 
     const cm = CAM_MODES[this.camMode];
-    const desired = target.clone().addScaledVector(fwd, -cm.dist);
+    const desired = this._desired.copy(target).addScaledVector(fwd, -cm.dist);
     desired.y += cm.height;
-    const look = target.clone().addScaledVector(fwd, cm.ahead);
+    const look = this._look.copy(target).addScaledVector(fwd, cm.ahead);
     look.y += cm.lift;
     if (!this.camInit) { this.camera.position.copy(desired); this.camLook.copy(look); this.camInit = true; }
     const k = 1 - Math.exp(-dt * 6);
@@ -714,8 +825,8 @@ export class View {
   }
 
   // 世界座標 → 螢幕座標（顯示名牌用）
-  project(v) {
-    const p = v.clone().project(this.camera);
+  project(v, lift = 0) {
+    const p = this._proj.copy(v); p.y += lift; p.project(this.camera);
     return { x: (p.x + 1) / 2 * innerWidth, y: (1 - p.y) / 2 * innerHeight, visible: p.z < 1 && p.z > -1 };
   }
 }

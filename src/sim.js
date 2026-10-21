@@ -1,7 +1,7 @@
 // 物理世界 + 比賽規則 + AI（不含畫面，可在 Node 裡跑無頭模擬）
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { STEP, trackPoint, trackQuat, mulberry32, floorHeightAt, WALL_H } from './track.js';
+import { STEP, trackPoint, trackQuat, mulberry32, floorHeightAt, WALL_H, FUNNEL_HOLE, FUNNEL_LANE } from './track.js';
 
 export const RADIUS = 0.5;
 export const GRAVITY = 30;
@@ -78,6 +78,8 @@ export class Race {
     this._wall(track.startI + 1, 0.5);
     this._wall(track.endI - 1, 0.5);
     this.gate = this._wall(track.gateI, 0.3);
+    // 漏斗洞口下方的出口賽道後面加一道擋板，接住掉下來的彈珠
+    for (const f of track.funnels) this._wall(f.exitI, 0.4);
 
     // 障礙區
     this.crosses = [];
@@ -153,7 +155,7 @@ export class Race {
         pattern: n % 6,
         body, collider, alive: true, finished: false, place: 0,
         row: r, idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0,
-        grounded: false, dashCd: 0, hopCd: 0, stillTimer: 0, flight: null, shortcuts: 0,
+        grounded: false, dashCd: 0, hopCd: 0, stillTimer: 0, flight: null, funnel: null, shortcuts: 0,
         stats: baseStats(), upgrades: [], elimT: 0, rank: n + 1,
         input: { x: 0, z: 0, dash: false },
         ai: (isPlayer && !autopilot) ? null : this._makeAI(),
@@ -216,7 +218,7 @@ export class Race {
     for (const m of this.marbles) {
       if (!m.alive) continue;
       this._sense(m);
-      if (this.phase === 'race' && !m.finished && !m.flight) {
+      if (this.phase === 'race' && !m.finished && !m.flight && !m.funnel) {
         if (m.ai) this._think(m, dt);
         this._control(m, dt);
         this._pistonBoost(m);
@@ -370,8 +372,10 @@ export class Race {
       this._land(m);
     }
     const p = m.body.translation();
+    if (this._inFunnel(m, p)) return;
     let best = m.idx, bd = Infinity;
-    const lo = Math.max(0, m.idx - 20), hi = Math.min(t.N - 1, m.idx + 40);
+    // 不要往回找到斷開的另一段（漏斗洞口上下）
+    const lo = Math.max(0, m.idx - 20, t.segStart[m.idx]), hi = Math.min(t.N - 1, m.idx + 40);
     for (let i = lo; i <= hi; i++) {
       const q = t.P[i];
       const d = (q.x - p.x) ** 2 + (q.y - p.y) ** 2 + (q.z - p.z) ** 2;
@@ -393,6 +397,43 @@ export class Race {
       if (m.grounded && t.floor[best] && Math.abs(m.lat) < hw && m.h < WALL_H) m.safeIdx = best;
     }
     if (m.offTimer > 0.6 || m.h < -15) this.respawn(m);
+  }
+
+  // 在漏斗裡：不靠 AI，只靠重力和邊緣繞圈；進度用「離洞口多近」來算
+  _inFunnel(m, p) {
+    const t = this.track;
+    for (const f of t.funnels) {
+      if (m.idx < f.i0 - 10 || m.idx > f.i1) continue;
+      const r = Math.hypot(p.x - f.c[0], p.z - f.c[1]);
+      if (r < f.R + 0.5 && p.y > f.yHole - 1.2 && p.y < f.yRim + 6) {
+        if (!m.funnel && r > f.R - FUNNEL_LANE * 2 - 0.5 && m.idx < f.i0) return false;   // 還在入口賽道上
+        m.funnel = f;
+        const frac = Math.min(1, Math.max(0, (f.R - r) / (f.R - FUNNEL_HOLE)));
+        m.idx = Math.max(m.idx, f.i0 + Math.round(frac * (f.i1 - f.i0)));
+        m.s = m.idx * STEP; m.lat = 0; m.h = 0;
+        if (m.s > m.maxS) m.maxS = m.s;
+        m.offTimer = 0;
+        // 卡在洞口附近不動（被別顆壓住）：往中間、往下輕輕推一下
+        const v = m.body.linvel();
+        if (Math.hypot(v.x, v.y, v.z) < 0.4) {
+          m.stillTimer += DT;
+          if (m.stillTimer > 0.8) {
+            m.stillTimer = 0;
+            const k = m.body.mass() * 1.5, dx = (f.c[0] - p.x) / (r || 1), dz = (f.c[1] - p.z) / (r || 1);
+            m.body.applyImpulse({ x: dx * k + (this.rand() - 0.5) * k, y: -k, z: dz * k + (this.rand() - 0.5) * k }, true);
+          }
+        } else m.stillTimer = 0;
+        return true;
+      }
+      if (m.funnel === f && p.y <= f.yHole - 1.2) {
+        // 從洞口掉下去了：接到出口賽道
+        m.funnel = null;
+        m.idx = f.exitI + Math.round(2 / STEP);
+        return false;
+      }
+    }
+    m.funnel = null;
+    return false;
   }
 
   respawn(m) {

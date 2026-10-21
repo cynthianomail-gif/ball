@@ -276,7 +276,7 @@ function updateTags() {
   }
   for (const { m, d } of [...tagEls, focusTag]) {
     if (!m) { d.style.display = 'none'; continue; }
-    const p = view.project(view.meshes[m.id].position.clone().setY(view.meshes[m.id].position.y + 2.4));
+    const p = view.project(view.meshes[m.id].position, 2.4);
     d.style.display = p.visible ? '' : 'none';
     if (p.visible) d.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
   }
@@ -348,6 +348,11 @@ function setHtml(id, html) {
   $(id).innerHTML = html;
 }
 
+// 網址加上 ?fps 會在左下角顯示每秒幾格，方便看手機順不順
+const showFps = new URLSearchParams(location.search).has('fps');
+let fpsTimer = 0;
+if (showFps) $('fps').classList.remove('hidden');
+
 // ---------- 主迴圈 ----------
 function frame(now) {
   requestAnimationFrame(frame);
@@ -377,6 +382,11 @@ function frame(now) {
   view.render(phase === 'betting' ? 0 : acc / DT, dt);
   if (phase !== 'betting') { updateHud(); updateTags(); }
 
+  if (showFps && (fpsTimer -= dt) < 0) {
+    fpsTimer = 0.5;
+    const q = view.quality;
+    $('fps').textContent = `${q.fps.toFixed(0)} fps · ${q.pr.toFixed(2)}x${view.renderer.shadowMap.enabled ? '' : ' · 無陰影'}`;
+  }
   if (msgTimer > 0) { msgTimer -= dt; if (msgTimer <= 0) { $('msg').classList.remove('show'); $('sub').classList.remove('show'); } }
 }
 
