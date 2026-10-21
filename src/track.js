@@ -12,21 +12,23 @@ const FLOOR_SEGS = 16;
 //       Z 障礙區(種類, 長度, 坡度)：直線上放一整區障礙
 //       R 回程直線(長度, 坡度)：U 字迴轉後的直線，金色積木抄近路的落點
 //       F 漏斗(半徑, 深度, 洞口下方落差)：從邊緣切進去，繞圈掉進中間的洞，落到下面的賽道
+//       H 連發夾彎(彎數, 每段長, 彎道半徑, 坡度)：窄窄的木頭溝槽來回 180 度急轉
 // 坡度為每單位長度下降量
 const PROGRAM = [
   ['S', 38, 0.015],     // 起跑區（閘門在 30）
   ['S', 14, 0.1],       // 衝下坡、慢慢變窄
   ['F', 14, 5, 5],            // 障礙區 1：漏斗，把擠成一團的彈珠拉成一條線
-  ['S', 4, 0.05],
+  ['S', 20, 0.05],      // 離開漏斗底下，夾彎才不會被漏斗擋住
+  ['H', 10, 7, 2.7, 0.2],     // 障礙區 2：十連發夾彎（比較陡，才滾得夠快）
   ['T', 90, 16, 0.07],
-  ['Z', 'cross', 50, 0.08],   // 障礙區 2：旋轉十字
+  ['Z', 'cross', 50, 0.08],   // 障礙區 3：旋轉十字
   ['T', -180, 16, 0.08],      // 急彎直接接下一關
-  ['Z', 'piston', 44, 0.06],  // 障礙區 3：跳跳積木
+  ['Z', 'piston', 44, 0.06],  // 障礙區 4：跳跳積木
   ['S', 6, 0.06],
   ['T', 180, 14, 0.07],       // U 字迴轉
   ['R', 50, 0.05],            // 回程直線：金色積木抄近路會落在這裡
   ['T', -90, 16, 0.07],
-  ['Z', 'pegs', 46, 0.2],     // 障礙區 4：彈珠台（比較陡）
+  ['Z', 'pegs', 46, 0.2],     // 障礙區 5：彈珠台（比較陡）
   ['T', -45, 16, 0.06],
   ['S', 40, 0.0],       // 終點（最後 30 是收集區）
 ];
@@ -36,8 +38,11 @@ export const ZONE_INFO = {
   piston: { name: '跳跳積木', icon: '🧱' },
   pegs: { name: '彈珠台', icon: '📍' },
   funnel: { name: '漏斗', icon: '🌀' },
+  zigzag: { name: '十連發夾彎', icon: '🔁' },
 };
 export const FUNNEL_HOLE = 1.1;        // 洞口半徑：比兩顆並排（直徑 2）再大一點，才不會兩顆互卡堵住
+export const ZIGZAG_LANE = 1.8;        // 夾彎溝槽的半寬（彈珠偶爾才超得過去）
+const ZIGZAG_BANK = 0.5;              // 夾彎彎道的傾斜角（弧度）
 export const FUNNEL_LANE = 3.5;        // 進漏斗前賽道縮到這個半寬
 
 // 漏斗剖面：r 從洞口到邊緣，回傳往下的深度（0～1）。一半直線一半雙曲線，越靠中間越陡
@@ -50,7 +55,7 @@ export function funnelDepth(r, R) {
 const GOLD_ROWS = [3, 7, 11, 15];  // 哪幾列的左邊兩排積木是金色的
 const SHORTCUT_AHEAD = -8;        // 落點在回程直線上、積木正對面再往前多遠（負的＝往回一點）
 
-const START = new THREE.Vector3(-105, 51, 95);
+const START = new THREE.Vector3(-105, 85, 95);
 const START_HEADING = 0; // 朝 +x
 
 export function mulberry32(seed) {
@@ -128,6 +133,20 @@ export function buildTrack(seed = 7) {
       push(0);
       funnels.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], R: Rf, depth, yRim, yHole: yRim - depth });
       zoneRanges.push({ type: 'funnel', i0, i1 });
+    } else if (cmd[0] === 'H') {
+      // 一段直、一個 180 度急彎，左彎右彎輪流，整串往左手邊前進
+      const [, count, L, r, slope] = cmd;
+      const i0 = xs.length - 1;
+      const dir = [-Math.sin(h), -Math.cos(h)];               // 前進方向（起點的左手邊）
+      const axis = [x + Math.cos(h) * L / 2, z - Math.sin(h) * L / 2];   // 每段中點連成的中線
+      const straight = () => { for (let i = 0, n = Math.round(L / STEP); i < n; i++) { x += Math.cos(h) * STEP; z -= Math.sin(h) * STEP; y -= slope * STEP; push(0); } };
+      for (let k = 0; k < count; k++) {
+        straight();
+        const sgn = k % 2 ? -1 : 1, n = Math.round(Math.PI * r / STEP), dh = sgn * Math.PI / n;
+        for (let i = 0; i < n; i++) { h += dh; x += Math.cos(h) * STEP; z -= Math.sin(h) * STEP; y -= slope * STEP; push(sgn / r); }
+      }
+      straight();
+      zoneRanges.push({ type: 'zigzag', i0, i1: xs.length - 1, dir, axis });
     } else if (cmd[0] === 'R') {
       const i0 = xs.length - 1;
       const n = Math.round(cmd[1] / STEP);
@@ -167,6 +186,11 @@ export function buildTrack(seed = 7) {
   for (let k = 0; k + 1 < cuts.length; k++) ySm.push(...smooth(ys.slice(cuts[k], cuts[k + 1]), 4, 2));
   for (const f of funnels) for (let i = f.i0 + 1; i <= f.i1; i++) ySm[i] = ys[i];
   const bank = smooth(curv.map(k => THREE.MathUtils.clamp(k * 11, -0.4, 0.4)), 16, 3);
+  // 夾彎每個彎各自傾斜（不然左彎右彎平滑後互相抵消，彈珠會直接撞牆停下來）
+  for (const z of zoneRanges) if (z.type === 'zigzag') {
+    const raw = curv.slice(z.i0, z.i1 + 1).map(k => THREE.MathUtils.clamp(k * 11, -ZIGZAG_BANK, ZIGZAG_BANK));
+    smooth(raw, 3, 2).forEach((b, k) => { bank[z.i0 + k] = b; });
+  }
 
   // 2. 寬度
   const total = (N - 1) * STEP;
@@ -178,6 +202,14 @@ export function buildTrack(seed = 7) {
     else if (s < 52) w = THREE.MathUtils.lerp(8.2, 5.5, (s - 34) / 18);
     if (s > total - 46) w = THREE.MathUtils.lerp(5.5, 8.5, Math.min(1, (s - (total - 46)) / 12));
     half[i] = w;
+  }
+  // 夾彎溝槽變窄（前後 6 單位慢慢收窄、放寬）
+  for (const z of zoneRanges) if (z.type === 'zigzag') {
+    const n = Math.round(6 / STEP);
+    for (let i = z.i0 - n; i <= z.i1 + n; i++) {
+      const k = i < z.i0 ? (z.i0 - i) / n : i > z.i1 ? (i - z.i1) / n : 0;
+      half[i] = Math.min(half[i], THREE.MathUtils.lerp(ZIGZAG_LANE, half[i], k));
+    }
   }
   for (const f of funnels) {
     const n = Math.round(14 / STEP);
@@ -225,6 +257,7 @@ export function buildTrack(seed = 7) {
 
   // 6. 三個障礙區
   const zones = zoneRanges.map(z => {
+    if (z.type === 'zigzag') return { ...z, s0: z.i0 * STEP, s1: z.i1 * STEP, crosses: [], pistons: [], pegs: [] };
     if (z.type === 'funnel') return { ...z, s0: z.i0 * STEP, s1: z.i1 * STEP, crosses: [], pistons: [], pegs: [], funnel: funnels.find(f => f.i0 === z.i0) };
     const len = (z.i1 - z.i0) * STEP;
     const at = d => z.i0 + Math.round(d / STEP);

@@ -666,7 +666,7 @@ export class View {
   _buildArches() {
     const t = this.track;
     this._arch(t.gateI + 2, bannerTex('起跑 START', null, '#fff7e0', '#e8483f'));
-    const look = { cross: ['小心被十字擋下來', '#e8483f'], piston: ['金色積木會把你彈去抄近路', '#35b45b'], pegs: ['彈來彈去看運氣', '#8e5bd6'], funnel: ['轉轉轉，一顆一顆掉下去', '#f07c2a'] };
+    const look = { cross: ['小心被十字擋下來', '#e8483f'], piston: ['金色積木會把你彈去抄近路', '#35b45b'], pegs: ['彈來彈去看運氣', '#8e5bd6'], funnel: ['轉轉轉，一顆一顆掉下去', '#f07c2a'], zigzag: ['連續十個 180 度急轉彎', '#2f7de1'] };
     t.zones.forEach((z, k) => this._arch(z.type === 'funnel' ? z.i0 - Math.round(36 / STEP) : z.i0, bannerTex(`${k + 1}. ${ZONE_INFO[z.type].name}`, look[z.type][0], look[z.type][1], '#ffffff')));
     this._arch(t.finishI, bannerTex('終點 FINISH', null, '#ffffff', '#111', true));
   }
@@ -777,10 +777,18 @@ export class View {
     const fm = this.focusMarble();
     const t = this.track;
     // 在漏斗裡跟領先者時，直接看漏斗中心，大家繞圈都看得到
-    const aim = this.focusId >= 0 && fm.id === this.focusId
-      ? this.meshes[fm.id].position
-      : fm.funnel ? this._aim.set(fm.funnel.c[0], fm.funnel.yHole + 1, fm.funnel.c[1])
-      : trackPoint(t, Math.min(t.N - 1, Math.round(fm.maxS / STEP)), 0, RADIUS, this._aim);
+    // 在夾彎裡跟領先者時，看夾彎的中線（不跟著左右來回甩）
+    const zz = t.zones.find(z => z.type === 'zigzag' && fm.maxS > z.s0 - 4 && fm.maxS < z.s1 + 2);
+    let aim;
+    if (this.focusId >= 0 && fm.id === this.focusId) aim = this.meshes[fm.id].position;
+    else if (fm.funnel) aim = this._aim.set(fm.funnel.c[0], fm.funnel.yHole + 1, fm.funnel.c[1]);
+    else {
+      aim = trackPoint(t, Math.min(t.N - 1, Math.round(fm.maxS / STEP)), 0, RADIUS, this._aim);
+      if (zz) {
+        const d = (aim.x - zz.axis[0]) * zz.dir[0] + (aim.z - zz.axis[1]) * zz.dir[1];
+        aim.x = zz.axis[0] + zz.dir[0] * d; aim.z = zz.axis[1] + zz.dir[1] * d;
+      }
+    }
     // 目標點平滑跟隨，上下彈跳跟得更慢，畫面才不會跟著抖
     const target = this.camTarget;
     if (!this.camInit) target.copy(aim);
@@ -788,7 +796,8 @@ export class View {
     target.x += (aim.x - target.x) * kh; target.z += (aim.z - target.z) * kh; target.y += (aim.y - target.y) * kv;
     // 方向只看前方一段賽道的走向（不看彈珠速度，撞到東西也不會晃）
     const want = this._want.set(0, 0, 0);
-    for (let d = 4; d <= 24; d += 4) { const tt = t.T[Math.min(t.N - 1, fm.idx + d)]; want.x += tt.x; want.z += tt.z; }
+    if (zz) want.set(zz.dir[0], 0, zz.dir[1]);     // 夾彎裡鏡頭朝整串前進的方向，不跟著每個彎轉
+    else for (let d = 4; d <= 24; d += 4) { const tt = t.T[Math.min(t.N - 1, fm.idx + d)]; want.x += tt.x; want.z += tt.z; }
     want.normalize();
     if (!this.camInit) this.camFwd.copy(want);
     if (!fm.funnel) this.camFwd.lerp(want, 1 - Math.exp(-dt * 2)).normalize();   // 漏斗裡方向固定，不跟著轉

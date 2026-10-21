@@ -9,6 +9,8 @@ console.log(`長度 ${t.total.toFixed(0)}  高度 ${lo.toFixed(1)} ~ ${hi.toFixe
 let bad = null;
 for (let i = 0; i < t.N; i += 2) for (let j = i + 80; j < t.N; j += 2) {
   const a = t.P[i], b = t.P[j];
+  // 夾彎相鄰的兩條溝本來就靠很近（高度差也小），不算
+  if (t.zones.some(z => z.type === 'zigzag' && i * STEP > z.s0 - 25 && j * STEP < z.s1 + 25)) continue;
   if (Math.hypot(a.x - b.x, a.z - b.z) < t.half[i] + t.half[j] + 2.5 && Math.abs(a.y - b.y) < 7 && (!bad || Math.abs(a.y - b.y) < bad.dy)) bad = { s1: i * STEP, s2: j * STEP, dy: Math.abs(a.y - b.y) };
 }
 console.log('自我交叉：', bad ? `s=${bad.s1} 和 s=${bad.s2} 只差 ${bad.dy.toFixed(1)}` : '沒有');

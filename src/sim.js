@@ -114,7 +114,8 @@ export class Race {
       }
     }
     this.pistonZone = track.zones.find(z => z.type === 'piston');
-    this.freeZones = track.zones.filter(z => z.type === 'pegs');
+    // 彈珠台、夾彎裡沒有 AI，只靠重力（夾彎裡 AI 會一直往彎道牆上撞）
+    this.freeZones = track.zones.filter(z => z.type === 'pegs' || z.type === 'zigzag');
 
     // 檢查點：每過一個淘汰 elimRate（預設 20%）
     this.cps = track.checkpoints.map((i, k) => ({
@@ -220,7 +221,7 @@ export class Race {
       if (!m.alive) continue;
       this._sense(m);
       if (this.phase === 'race' && !m.finished && !m.flight && !m.funnel) {
-        // 彈珠台裡完全交給重力和釘子（AI 的防側滑會把自己頂在釘子上）
+        // 彈珠台、夾彎裡完全交給重力（AI 的防側滑會把自己頂在釘子或牆上）
         const free = this.freeZones.some(z => m.s > z.s0 - 1 && m.s < z.s1);
         if (m.ai && !free) this._think(m, dt);
         if (!free) this._control(m, dt);
