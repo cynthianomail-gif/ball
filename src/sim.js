@@ -413,7 +413,7 @@ export class Race {
     if (off) m.offTimer += dt;
     else {
       m.offTimer = 0;
-      if (m.grounded && t.floor[best] && Math.abs(m.lat) < hw && m.h < WALL_H) m.safeIdx = best;
+      if (m.grounded && t.floor[best] && Math.abs(m.lat) < hw && m.h < t.wallH[best]) m.safeIdx = best;
     }
     if (m.offTimer > 0.6 || m.h < -15) this.respawn(m);
   }

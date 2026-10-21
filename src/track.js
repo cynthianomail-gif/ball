@@ -19,7 +19,7 @@ const PROGRAM = [
   ['S', 14, 0.1],       // 衝下坡、慢慢變窄
   ['F', 14, 5, 5],            // 障礙區 1：漏斗，把擠成一團的彈珠拉成一條線
   ['S', 20, 0.05],      // 離開漏斗底下，夾彎才不會被漏斗擋住
-  ['H', 10, 7, 2.7, 0.2],     // 障礙區 2：十連發夾彎（比較陡，才滾得夠快）
+  ['H', 10, 7, 1.6, 0.2],     // 障礙區 2：十連發夾彎（比較陡，才滾得夠快）
   ['T', 90, 16, 0.07],
   ['Z', 'cross', 50, 0.08],   // 障礙區 3：旋轉十字
   ['T', -180, 16, 0.08],      // 急彎直接接下一關
@@ -41,8 +41,10 @@ export const ZONE_INFO = {
   zigzag: { name: '十連發夾彎', icon: '🔁' },
 };
 export const FUNNEL_HOLE = 1.1;        // 洞口半徑：比兩顆並排（直徑 2）再大一點，才不會兩顆互卡堵住
-export const ZIGZAG_LANE = 1.8;        // 夾彎溝槽的半寬（彈珠偶爾才超得過去）
+export const ZIGZAG_LANE = 0.7;        // 夾彎溝槽的半寬：剛好放得下一顆彈珠（直徑 1），只能排成一列
 const ZIGZAG_BANK = 0.5;              // 夾彎彎道的傾斜角（弧度）
+const ZIGZAG_WALL = 1.4;              // 夾彎溝槽的牆高（從溝底算）
+const ZIGZAG_TALL = 22;               // 夾彎開頭這麼長的一段牆還是高的
 export const FUNNEL_LANE = 3.5;        // 進漏斗前賽道縮到這個半寬
 
 // 漏斗剖面：r 從洞口到邊緣，回傳往下的深度（0～1）。一半直線一半雙曲線，越靠中間越陡
@@ -55,7 +57,7 @@ export function funnelDepth(r, R) {
 const GOLD_ROWS = [3, 7, 11, 15];  // 哪幾列的左邊兩排積木是金色的
 const SHORTCUT_AHEAD = -8;        // 落點在回程直線上、積木正對面再往前多遠（負的＝往回一點）
 
-const START = new THREE.Vector3(-105, 85, 95);
+const START = new THREE.Vector3(-105, 78, 95);
 const START_HEADING = 0; // 朝 +x
 
 export function mulberry32(seed) {
@@ -85,13 +87,13 @@ function smooth(arr, radius, passes = 1) {
 }
 
 // 截面輪廓（局部座標 x=橫向, y=上），左牆外頂 → 地板 → 右牆外頂
-export function colliderProfile(hw) {
-  const pts = [[-hw - WALL_T, WALL_H], [-hw, WALL_H]];
+export function colliderProfile(hw, wh = WALL_H) {
+  const pts = [[-hw - WALL_T, wh], [-hw, wh]];
   for (let k = 0; k <= FLOOR_SEGS; k++) {
     const x = -hw + (2 * hw * k) / FLOOR_SEGS;
     pts.push([x, EDGE_RISE * Math.pow(Math.abs(x / hw), 3)]);
   }
-  pts.push([hw, WALL_H], [hw + WALL_T, WALL_H]);
+  pts.push([hw, wh], [hw + WALL_T, wh]);
   return pts;
 }
 
@@ -203,12 +205,16 @@ export function buildTrack(seed = 7) {
     if (s > total - 46) w = THREE.MathUtils.lerp(5.5, 8.5, Math.min(1, (s - (total - 46)) / 12));
     half[i] = w;
   }
-  // 夾彎溝槽變窄（前後 6 單位慢慢收窄、放寬）
+  // 夾彎溝槽變窄（前後 10 單位慢慢收窄、放寬，彈珠才會乖乖排成一列進去），牆也變矮，像木板上挖出來的溝
+  const wallH = new Float32Array(N).fill(WALL_H);
   for (const z of zoneRanges) if (z.type === 'zigzag') {
-    const n = Math.round(6 / STEP);
+    const n = Math.round(10 / STEP);
     for (let i = z.i0 - n; i <= z.i1 + n; i++) {
       const k = i < z.i0 ? (z.i0 - i) / n : i > z.i1 ? (i - z.i1) / n : 0;
       half[i] = Math.min(half[i], THREE.MathUtils.lerp(ZIGZAG_LANE, half[i], k));
+      // 入口和前兩個彎的牆維持高的（彈珠剛衝進來還很快，矮牆會被甩出去），之後才變成矮矮的溝
+      const kin = Math.min(1, Math.max(0, (i - z.i0 - Math.round(ZIGZAG_TALL / STEP)) / Math.round(4 / STEP)));
+      if (i >= z.i0) wallH[i] = Math.min(wallH[i], THREE.MathUtils.lerp(WALL_H, THREE.MathUtils.lerp(ZIGZAG_WALL, WALL_H, k), kin));
     }
   }
   for (const f of funnels) {
@@ -331,7 +337,7 @@ export function buildTrack(seed = 7) {
     const idx = [];
     let v = 0;
     for (let i = a; i <= b; i++) {
-      const prof = colliderProfile(half[i]);
+      const prof = colliderProfile(half[i], wallH[i]);
       for (const [px, py] of prof) {
         verts[v++] = P[i].x + R[i].x * px + U[i].x * py;
         verts[v++] = P[i].y + R[i].y * px + U[i].y * py;
@@ -348,7 +354,7 @@ export function buildTrack(seed = 7) {
   });
 
   return {
-    N, P, T, R, U, half, floor, ranges, total,
+    N, P, T, R, U, half, wallH, floor, ranges, total,
     gateI, finishI, checkpoints, zones, shortcuts, funnels, segStart, colliders: [...colliders, ...funnels.flatMap(f => [f.cone, f.wall])],
     startI: 0, endI: N - 1,
   };

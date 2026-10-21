@@ -461,7 +461,8 @@ export class View {
         const loops = [];
         for (let i = c0; i <= c1; i++) {
           const hw = t.half[i];
-          loops.push([[hw, EDGE_RISE], [hw, WALL_H], [hw + WALL_T, WALL_H], [hw + WALL_T, -BEAM], [-hw - WALL_T, -BEAM], [-hw - WALL_T, WALL_H], [-hw, WALL_H], [-hw, EDGE_RISE]]);
+          const wh = t.wallH[i];
+          loops.push([[hw, EDGE_RISE], [hw, wh], [hw + WALL_T, wh], [hw + WALL_T, -BEAM], [-hw - WALL_T, -BEAM], [-hw - WALL_T, wh], [-hw, wh], [-hw, EDGE_RISE]]);
         }
         for (let e = 0; e < 7; e++) {
           const base = sp.length / 3;
