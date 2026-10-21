@@ -17,11 +17,9 @@ export async function initPhysics() { await RAPIER.init(); }
 export const UPGRADES = [
   { id: 'engine', icon: '🚀', name: '渦輪引擎', desc: '推進力 +25%', apply: s => { s.thrust *= 1.25; } },
   { id: 'speed', icon: '💨', name: '流線外殼', desc: '極速 +12%', apply: s => { s.maxSpeed *= 1.12; } },
-  { id: 'spring', icon: '🦘', name: '彈簧底座', desc: '跳躍力 +25%', apply: s => { s.jump *= 1.25; } },
   { id: 'dash', icon: '⚡', name: '閃電衝刺', desc: '衝刺次數 +2', apply: s => { s.dashes += 2; } },
   { id: 'heavy', icon: '🪨', name: '鉛芯彈珠', desc: '重量 +60%，撞人更痛', apply: s => { s.mass *= 1.6; } },
   { id: 'air', icon: '🪂', name: '空中操控', desc: '空中轉向 +80%', apply: s => { s.air = Math.min(1, s.air * 1.8); } },
-  { id: 'double', icon: '🌀', name: '二段跳', desc: '空中可以再跳一次', apply: s => { s.airJumps += 1; } },
   { id: 'grip', icon: '🧤', name: '防滑表面', desc: '轉向反應 +40%', apply: s => { s.grip *= 1.4; } },
 ];
 
@@ -39,7 +37,7 @@ const PALETTE = [
 ];
 
 function baseStats() {
-  return { thrust: 13, maxSpeed: 21, jump: 11, dashes: 1, mass: 1, air: 0.35, airJumps: 0, grip: 1 };
+  return { thrust: 13, maxSpeed: 21, dashes: 1, mass: 1, air: 0.35, grip: 1 };
 }
 
 const _v = new THREE.Vector3();
@@ -151,9 +149,9 @@ export class Race {
         pattern: n % 6,
         body, collider, alive: true, finished: false, place: 0,
         row: r, idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0,
-        grounded: false, jumpCd: 0, dashCd: 0, hopCd: 0, airJumpsLeft: 0, stillTimer: 0,
+        grounded: false, dashCd: 0, hopCd: 0, stillTimer: 0,
         stats: baseStats(), upgrades: [], elimT: 0, rank: n + 1,
-        input: { x: 0, z: 0, jump: false, dash: false },
+        input: { x: 0, z: 0, dash: false },
         ai: (isPlayer && !autopilot) ? null : this._makeAI(),
       };
       if (m.ai && !isPlayer) {
@@ -174,7 +172,7 @@ export class Race {
     const r = this.rand;
     return {
       skill: 0.8 + r() * 0.2, lane: (r() * 2 - 1) * 0.4, laneTarget: (r() * 2 - 1) * 0.4,
-      look: 5 + r() * 4, nextLane: 2 + r() * 5, nextJump: 3 + r() * 8, bravery: r(),
+      look: 5 + r() * 4, nextLane: 2 + r() * 5, bravery: r(),
     };
   }
 
@@ -236,8 +234,7 @@ export class Race {
     this.ray.origin.x = p.x; this.ray.origin.y = p.y; this.ray.origin.z = p.z;
     const hit = this.world.castRay(this.ray, RADIUS + 0.22, true, undefined, undefined, m.collider);
     m.grounded = !!hit;
-    if (m.grounded) m.airJumpsLeft = m.stats.airJumps;
-    m.jumpCd -= DT; m.dashCd -= DT; m.hopCd -= DT;
+    m.dashCd -= DT; m.hopCd -= DT;
   }
 
   _control(m, dt) {
@@ -261,15 +258,6 @@ export class Race {
       }
       b.applyImpulse({ x: ax * ctrl * mass * dt, y: 0, z: az * ctrl * mass * dt }, true);
     }
-    if (inp.jump) {
-      inp.jump = false;
-      if (m.jumpCd <= 0 && (m.grounded || m.airJumpsLeft > 0)) {
-        if (!m.grounded) m.airJumpsLeft--;
-        b.setLinvel({ x: v.x, y: Math.max(v.y, 0) + st.jump, z: v.z }, true);
-        m.jumpCd = 0.3;
-        this.events.push({ type: 'jump', m });
-      }
-    }
     if (inp.dash) {
       inp.dash = false;
       if (st.dashes > 0 && m.dashCd <= 0) {
@@ -279,7 +267,7 @@ export class Race {
           dx = t.x; dz = t.z;
           const l = Math.hypot(dx, dz); dx /= l; dz /= l;
         }
-        b.setLinvel({ x: v.x + dx * 13, y: Math.max(v.y, 0) + 2, z: v.z + dz * 13 }, true);
+        b.setLinvel({ x: v.x + dx * 13, y: v.y, z: v.z + dz * 13 }, true);
         st.dashes--; m.dashCd = 0.8;
         this.events.push({ type: 'dash', m });
       }
@@ -323,12 +311,6 @@ export class Race {
     ai.nextLane -= dt;
     if (ai.nextLane <= 0) { ai.laneTarget = (this.rand() * 2 - 1) * 0.45; ai.nextLane = 2 + this.rand() * 5; }
 
-    // 快到十字旋轉門時偶爾跳一下
-    let wantJump = false;
-    for (const c of this.crosses) {
-      const dist = (c.i - m.idx) * STEP;
-      if (dist > 0 && dist < 3 + speed * 0.1 && this.rand() < 0.08 * ai.skill) wantJump = true;
-    }
     ai.lane += (ai.laneTarget - ai.lane) * Math.min(1, dt * 2.5);
 
     const li = Math.min(t.N - 1, m.idx + Math.round((ai.look + speed * 0.3) / STEP));
@@ -337,11 +319,15 @@ export class Race {
     const l = Math.hypot(dx, dz) || 1;
     inp.x = dx / l; inp.z = dz / l;
 
-    ai.nextJump -= dt;
-    if (ai.nextJump <= 0) { wantJump = true; ai.nextJump = 4 + this.rand() * 10; }
-    if (speed < 2) { m.stillTimer += dt; if (m.stillTimer > 1.5) { wantJump = true; m.stillTimer = 0; } }
-    else m.stillTimer = 0;
-    if (wantJump && m.grounded) inp.jump = true;
+    // 卡住超過 1.5 秒：沿賽道輕推一下（不會跳）
+    if (speed < 2) {
+      m.stillTimer += dt;
+      if (m.stillTimer > 1.5) {
+        m.stillTimer = 0;
+        const tv = t.T[m.idx], k = 6 * m.body.mass();
+        m.body.applyImpulse({ x: tv.x * k, y: 0, z: tv.z * k }, true);
+      }
+    } else m.stillTimer = 0;
 
     if (m.stats.dashes > 0 && m.dashCd <= 0 && m.grounded && this.rand() < 0.0015 * (0.5 + ai.bravery)) inp.dash = true;
   }

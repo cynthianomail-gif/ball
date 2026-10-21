@@ -117,7 +117,9 @@ export class View {
     const mobile = matchMedia('(pointer: coarse)').matches;
     this.mobile = mobile;
     const r = this.renderer = new THREE.WebGLRenderer({ canvas, antialias: !mobile, powerPreference: 'high-performance' });
-    r.setPixelRatio(Math.min(devicePixelRatio, mobile ? 1.5 : 2));
+    const maxPr = Math.min(devicePixelRatio, mobile ? 1.5 : 2);
+    this.quality = { pr: maxPr, max: maxPr, min: Math.min(maxPr, mobile ? 0.75 : 1), ema: 1 / 60, timer: 0 };
+    r.setPixelRatio(maxPr);
     r.toneMapping = THREE.ACESFilmicToneMapping;
     r.toneMappingExposure = 1.05;
     r.shadowMap.enabled = true;
@@ -136,6 +138,9 @@ export class View {
     this.dragging = false;
     this.camFwd = new THREE.Vector3(1, 0, 0);
     this.camLook = new THREE.Vector3();
+    this.camTarget = new THREE.Vector3();
+    this._aim = new THREE.Vector3();
+    this._want = new THREE.Vector3();
     this.camInit = false;
 
     scene.add(new THREE.HemisphereLight(0xfff4e0, 0x8a6a48, 1.1));
@@ -164,6 +169,21 @@ export class View {
 
     this.resize();
     addEventListener('resize', () => this.resize());
+  }
+
+  // 動態解析度：跑不動就降低渲染解析度，順了再慢慢調回來
+  adaptQuality(frameDt) {
+    if (frameDt > 0.25) return;            // 切到背景回來的那一幀不算
+    const q = this.quality;
+    q.ema += (frameDt - q.ema) * 0.05;
+    q.timer += frameDt;
+    if (q.timer < 1.5) return;
+    let pr = q.pr;
+    if (q.ema > 1 / 45 && pr > q.min) pr = Math.max(q.min, pr - 0.25);
+    else if (q.ema < 1 / 57 && pr < q.max && q.timer > 4) pr = Math.min(q.max, pr + 0.25);
+    else if (q.ema < 1 / 57) return;      // 順了也要等久一點才調高
+    q.timer = 0;
+    if (pr !== q.pr) { q.pr = pr; this.renderer.setPixelRatio(pr); this.resize(); }
   }
 
   resize() {
@@ -598,17 +618,23 @@ export class View {
     }
 
     // 鏡頭
+    // 跟領先者時對準賽道中線，換人領先鏡頭也不會跳；跟某顆彈珠時對準牠
     const fm = this.focusMarble();
-    const fk = fm.id;
-    const target = this.meshes[fk].position;
     const t = this.track;
-    const ti = Math.min(t.N - 1, fm.idx + 10);
-    const want = new THREE.Vector3(t.T[ti].x, 0, t.T[ti].z).normalize();
-    const v = fm.body.linvel();
-    const sp = Math.hypot(v.x, v.z);
-    if (sp > 5 && fm.alive) want.lerp(new THREE.Vector3(v.x / sp, 0, v.z / sp), 0.35).normalize();
+    const aim = this.focusId >= 0 && fm.id === this.focusId
+      ? this.meshes[fm.id].position
+      : trackPoint(t, Math.min(t.N - 1, Math.round(fm.maxS / STEP)), 0, RADIUS, this._aim);
+    // 目標點平滑跟隨，上下彈跳跟得更慢，畫面才不會跟著抖
+    const target = this.camTarget;
+    if (!this.camInit) target.copy(aim);
+    const kh = 1 - Math.exp(-dt * 8), kv = 1 - Math.exp(-dt * 3);
+    target.x += (aim.x - target.x) * kh; target.z += (aim.z - target.z) * kh; target.y += (aim.y - target.y) * kv;
+    // 方向只看前方一段賽道的走向（不看彈珠速度，撞到東西也不會晃）
+    const want = this._want.set(0, 0, 0);
+    for (let d = 4; d <= 24; d += 4) { const tt = t.T[Math.min(t.N - 1, fm.idx + d)]; want.x += tt.x; want.z += tt.z; }
+    want.normalize();
     if (!this.camInit) this.camFwd.copy(want);
-    this.camFwd.lerp(want, 1 - Math.exp(-dt * 2.5)).normalize();
+    this.camFwd.lerp(want, 1 - Math.exp(-dt * 2)).normalize();
     if (!this.dragging) this.yawOffset *= Math.exp(-dt * 1.2);
     const fwd = this.camFwd.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yawOffset);
     this.viewFwd = fwd;

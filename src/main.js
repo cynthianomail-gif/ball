@@ -257,6 +257,8 @@ function updateTags() {
 }
 
 const dotEls = [];
+let barW = 0;
+addEventListener('resize', () => { barW = 0; });
 function buildProgress(ids) {
   const bar = $('progress'), dots = $('dots');
   bar.querySelectorAll('.tick').forEach(t => t.remove());
@@ -280,9 +282,9 @@ function buildProgress(ids) {
 
 function updateHud() {
   const L = race.finishS;
+  if (!barW) barW = $('progress').clientWidth;
   race.marbles.forEach((m, k) => {
-    const d = dotEls[k];
-    d.style.left = Math.min(100, Math.max(0, m.maxS / L * 100)) + '%';
+    dotEls[k].style.transform = `translateX(${(Math.min(1, Math.max(0, m.maxS / L)) * barW).toFixed(1)}px)`;
   });
   hudTimer -= 1;
   if (hudTimer > 0) return;
@@ -292,24 +294,33 @@ function updateHud() {
   const fm = view.focusMarble();
   const zi = track.zones.findIndex(z => fm.maxS < z.s1);
   const z = track.zones[zi];
-  if (race.phase === 'countdown') $('cpInfo').textContent = '準備起跑…';
-  else if (fm.finished) $('cpInfo').textContent = `${fm.name} 已抵達終點`;
-  else if (!z) $('cpInfo').textContent = '最後衝刺！';
-  else $('cpInfo').textContent = `${fm.maxS >= z.s0 ? '正在通過' : '下一關'}：${ZONE_INFO[z.type].icon} ${ZONE_INFO[z.type].name}`;
+  setHtml('cpInfo', race.phase === 'countdown' ? '準備起跑…'
+    : fm.finished ? `${fm.name} 已抵達終點`
+    : !z ? '最後衝刺！'
+    : `${fm.maxS >= z.s0 ? '正在通過' : '下一關'}：${ZONE_INFO[z.type].icon} ${ZONE_INFO[z.type].name}`);
 
   const status = m => m.finished ? `🏁 第 ${m.place} 名` : `第 ${m.rank} 名`;
-  $('myBets').innerHTML = bets.length
+  setHtml('myBets', bets.length
     ? bets.map(b => { const m = race.marbles[b.id]; return `<div><span class="sw" style="background:${hex(m.color)}"></span><b>${m.name}</b> ${TYPE_NAME[b.type]} ${b.amount}<span class="pos">${status(m)}</span></div>`; }).join('')
-    : '<div class="dim">觀戰中（沒有下注）</div>';
+    : '<div class="dim">觀戰中（沒有下注）</div>');
 
   const top = race.ranking.slice(0, 5);
   for (const b of bets) { const m = race.marbles[b.id]; if (!top.includes(m)) top.push(m); }
-  $('board').innerHTML = top.map(m => `<li class="${isMine(m) ? 'me' : ''}"><span class="n">${m.rank}</span><span class="sw" style="background:${hex(m.color)}"></span>${m.name}${m.finished ? ' 🏁' : ''}</li>`).join('');
+  setHtml('board', top.map(m => `<li class="${isMine(m) ? 'me' : ''}"><span class="n">${m.rank}</span><span class="sw" style="background:${hex(m.color)}"></span>${m.name}${m.finished ? ' 🏁' : ''}</li>`).join(''));
+}
+
+// 內容沒變就不要重設 innerHTML，省掉手機上的重新排版
+const htmlCache = {};
+function setHtml(id, html) {
+  if (htmlCache[id] === html) return;
+  htmlCache[id] = html;
+  $(id).innerHTML = html;
 }
 
 // ---------- 主迴圈 ----------
 function frame(now) {
   requestAnimationFrame(frame);
+  view.adaptQuality((now - last) / 1000);
   const dt = Math.max(0, Math.min(0.05, (now - last) / 1000));
   last = now;
 
