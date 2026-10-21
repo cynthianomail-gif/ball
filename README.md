@@ -24,6 +24,12 @@ npm run build
 
 會輸出 `dist/index.html`，所有程式都包在這一個檔案裡，可以直接雙擊開啟，也可以上傳到 GitHub Pages、itch.io 等任何網頁空間。
 
+## GitHub Pages
+
+`.github/workflows/deploy.yml` 會在推到 `main` 時自動 build 並發佈 `dist/`。
+第一次要到 repo 的 **Settings → Pages → Build and deployment → Source** 選 **GitHub Actions**。
+（直接發佈原始碼是不能玩的：瀏覽器看不懂 `import 'three'`，一定要先 build。）
+
 ## 操作
 
 | 動作 | 電腦 | 手機 |
