@@ -4,6 +4,7 @@ import * as THREE from 'three';
 export const STEP = 0.5;          // 取樣間距
 export const WALL_H = 3.0;        // 牆高（以軌道底為 0）
 export const EDGE_RISE = 0.9;     // 地板兩側上翹高度
+export const PISTON_RISE = 0.1;   // 跳跳積木那段地板兩側只翹一點點
 export const WALL_T = 0.7;        // 牆厚
 export const BEAM = 1.0;          // 軌道底下厚度
 const FLOOR_SEGS = 16;
@@ -42,7 +43,7 @@ const PROGRAM = [
   ['Z', 'pegs', 46, 0.2],     // 障礙區 6：彈珠台（比較陡）
   ['T', -45, 16, 0.06],
   ['S', 8, 0.05],
-  ['W', 6, 2.6],              // 障礙區 7：蹺蹺板塔，左右左右掉下去
+  ['W', 5, 3.6],              // 障礙區 7：蹺蹺板塔，V 字翅膀左右左右倒下去
   ['S', 6, 0.04],
   ['S', 40, 0.0],       // 終點（最後 30 是收集區）
 ];
@@ -61,7 +62,8 @@ export const ZIGZAG_LANE = 0.7;        // 夾彎溝槽的半寬：剛好放得�
 const ZIGZAG_BANK = 0.5;              // 夾彎彎道的傾斜角（弧度）
 const ZIGZAG_WALL = 1.1;              // 夾彎溝槽的牆高（從溝底算，彈珠直徑 1）
 const ZIGZAG_TALL = 22;               // 夾彎開頭這麼長的一段牆還是高的
-export const TOWER_LANE = 0.9;         // 進蹺蹺板塔前賽道收窄到這個半寬（塔裡的槽寬 1.6）
+export const TOWER_LANE = 1.0;         // 進蹺蹺板塔前賽道收窄到這個半寬（塔裡的槽寬 1.6）
+export const SEESAW_TIP = 2.4;         // 蹺蹺板翅膀尖端離中間多遠（左右兩層剛好上下對齊）
 export const FUNNEL_LANE = 3.5;        // 進漏斗前賽道縮到這個半寬
 
 // 漏斗剖面：r 從洞口到邊緣，回傳往下的深度（0～1）。一半直線一半雙曲線，越靠中間越陡
@@ -71,7 +73,9 @@ export function funnelDepth(r, R) {
   return 0.4 * a + 0.6 * b;
 }
 
-const GOLD_ROWS = [3, 7, 11, 15];  // 哪幾列的左邊兩排積木是金色的
+const GOLD_ROWS = [2, 6, 10, 13];  // 哪幾列的左邊兩塊積木是金色的
+export const PISTON_COLS = 4;      // 跳跳積木一列幾塊
+export const PISTON_ROW = 2.9;     // 跳跳積木每列間隔（積木前後長 2.8）
 const SHORTCUT_AHEAD = -8;        // 落點在回程直線上、積木正對面再往前多遠（負的＝往回一點）
 
 const START = new THREE.Vector3(-105, 123, 95);
@@ -104,19 +108,19 @@ function smooth(arr, radius, passes = 1) {
 }
 
 // 截面輪廓（局部座標 x=橫向, y=上），左牆外頂 → 地板 → 右牆外頂
-export function colliderProfile(hw, wh = WALL_H) {
+export function colliderProfile(hw, wh = WALL_H, rise = EDGE_RISE) {
   const pts = [[-hw - WALL_T, wh], [-hw, wh]];
   for (let k = 0; k <= FLOOR_SEGS; k++) {
     const x = -hw + (2 * hw * k) / FLOOR_SEGS;
-    pts.push([x, EDGE_RISE * Math.pow(Math.abs(x / hw), 3)]);
+    pts.push([x, rise * Math.pow(Math.abs(x / hw), 3)]);
   }
   pts.push([hw, wh], [hw + WALL_T, wh]);
   return pts;
 }
 
-export function floorHeightAt(lat, hw) {
+export function floorHeightAt(lat, hw, rise = EDGE_RISE) {
   const x = Math.min(1, Math.abs(lat / hw));
-  return EDGE_RISE * x * x * x;
+  return rise * x * x * x;
 }
 
 export function buildTrack(seed = 7) {
@@ -156,23 +160,26 @@ export function buildTrack(seed = 7) {
       funnels.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], R: Rf, depth, yRim, yHole: yRim - depth, lane, wallH: wall, taper: opt.taper ?? 14 });
       zoneRanges.push({ type: opt.group || 'funnel', i0, i1 });
     } else if (cmd[0] === 'W') {
-      // 蹺蹺板塔：賽道末端往前掉進一個直立的窄槽，裡面的蹺蹺板左右交錯往下
+      // 蹺蹺板塔：賽道末端往前掉進一個直立的窄槽，裡面一層層 V 字形的蹺蹺板（像張開的翅膀）
+      // 彈珠掉在一邊翅膀上滾到中間的凹處 → 蹺蹺板往另一邊倒 → 從那邊翅膀尖端掉到下一層，左右左右往下
       const [, count, gap] = cmd;
       const i0 = xs.length - 1;
       const f = [Math.cos(h), -Math.sin(h)], r = [Math.sin(h), Math.cos(h)];   // 前進方向、右手邊
-      const cx = x + f[0] * 1.0, cz = z + f[1] * 1.0;
-      const yTop = y, yPivot0 = y - 2.4;
+      const d0 = -1;                         // 第一層往左倒，所以彈珠要掉在它右邊的翅膀上
+      const cx = x + f[0] * 1.0 + r[0] * d0 * SEESAW_TIP, cz = z + f[1] * 1.0 + r[1] * d0 * SEESAW_TIP;
+      const yTop = y, yPivot0 = y - 3.2;
       const rockers = [];
-      for (let k = 0; k < count; k++) rockers.push({ side: k % 2 ? 1 : -1, y: yPivot0 - k * gap });
-      const yExit = yPivot0 - count * gap - 0.6;
+      for (let k = 0; k < count; k++) rockers.push({ dir: k % 2 ? -d0 : d0, y: yPivot0 - k * gap });
+      const yExit = yPivot0 - count * gap + 0.4;
+      const exitX = rockers[count - 1].dir * SEESAW_TIP;     // 最後一層從這邊掉出去
       // 塔裡沒有賽道：一條幾乎垂直往下的線當進度參考
       const x0 = x, z0 = z, y0 = y, n = Math.round((y0 - yExit) / STEP);
       for (let i = 1; i <= n; i++) { x = x0 + (cx - x0) * i / n; z = z0 + (cz - z0) * i / n; y = y0 + (yExit + 1 - y0) * i / n; push(0, 2); }
       const i1 = xs.length - 1;
       breaks.add(i1);
-      x = cx - f[0] * 2; z = cz - f[1] * 2; y = yExit;
+      x = cx + r[0] * exitX - f[0] * 2; z = cz + r[1] * exitX - f[1] * 2; y = yExit;
       push(0);
-      towers.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], f, r, rockers, yTop, yExit, gap });
+      towers.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], f, r, rockers, yTop, yExit, gap, exitX, entryX: -d0 * SEESAW_TIP });
       zoneRanges.push({ type: 'seesaw', i0, i1 });
     } else if (cmd[0] === 'H') {
       // 一段直、一個 180 度急彎，左彎右彎輪流，整串往左手邊前進
@@ -263,9 +270,19 @@ export function buildTrack(seed = 7) {
     for (let i = f.i0 + 1; i <= f.i1; i++) half[i] = f.R;
   }
   for (const w of towers) {
-    const n = Math.round(8 / STEP);
+    const n = Math.round(18 / STEP);
     for (let k = 0; k <= n; k++) half[w.i0 - k] = Math.min(half[w.i0 - k], THREE.MathUtils.lerp(TOWER_LANE, 5.5, k / n));
     for (let i = w.i0 + 1; i <= w.i1; i++) half[i] = 4;
+  }
+
+  // 跳跳積木那段地板幾乎是平的，四塊積木才能鋪滿整個跑道寬
+  const rise = new Float32Array(N).fill(EDGE_RISE);
+  for (const z of zoneRanges) if (z.type === 'piston') {
+    const n = Math.round(6 / STEP);
+    for (let i = z.i0 - n; i <= z.i1 + n; i++) {
+      const k = Math.min(1, Math.max(0, (z.i0 - i) / n, (i - z.i1) / n));
+      rise[i] = THREE.MathUtils.lerp(PISTON_RISE, EDGE_RISE, k);
+    }
   }
 
   // 3. 座標系
@@ -326,12 +343,13 @@ export function buildTrack(seed = 7) {
       // 三座十字旋轉門，轉向交錯
       for (let k = 0; k < 3; k++) zone.crosses.push({ i: at(10 + k * 15), speed: (k % 2 ? -1 : 1) * (1.6 + rand() * 0.3), angle: rand() * Math.PI });
     } else if (z.type === 'piston') {
-      // 4 排 × 18 列的積木鋪滿整區，像琴鍵一樣交錯升降
-      const rows = 18, gap = 2.1, d0 = (len - (rows - 1) * gap) / 2;
-      for (let r = 0; r < rows; r++) for (let c = 0; c < 4; c++) {
-        // 靠 U 字內側（左邊）兩排有幾塊金色積木
+      // 一列 4 塊大積木鋪滿整個跑道寬，像琴鍵一樣交錯升降
+      const rows = Math.floor(len / PISTON_ROW), d0 = (len - (rows - 1) * PISTON_ROW) / 2;
+      for (let r = 0; r < rows; r++) for (let c = 0; c < PISTON_COLS; c++) {
+        // 靠 U 字內側（左邊）兩塊有幾列是金色積木
         const gold = c <= 1 && GOLD_ROWS.includes(r);
-        zone.pistons.push({ i: at(d0 + r * gap), lat: (c - 1.5) * 2, row: r, col: c, gold, color: Math.floor(rand() * 6), letter: Math.floor(rand() * 26) });
+        const i = at(d0 + r * PISTON_ROW), cw = half[i] * 2 / PISTON_COLS;
+        zone.pistons.push({ i, lat: (c - (PISTON_COLS - 1) / 2) * cw, hw: cw / 2 - 0.04, hd: PISTON_ROW / 2 - 0.05, row: r, col: c, gold, color: Math.floor(rand() * 6) });
       }
     } else if (z.type === 'pegs') {
       // 交錯排列的釘子
@@ -391,7 +409,7 @@ export function buildTrack(seed = 7) {
     const idx = [];
     let v = 0;
     for (let i = a; i <= b; i++) {
-      const prof = colliderProfile(half[i], wallH[i]);
+      const prof = colliderProfile(half[i], wallH[i], rise[i]);
       for (const [px, py] of prof) {
         verts[v++] = P[i].x + R[i].x * px + U[i].x * py;
         verts[v++] = P[i].y + R[i].y * px + U[i].y * py;
@@ -408,7 +426,7 @@ export function buildTrack(seed = 7) {
   });
 
   return {
-    N, P, T, R, U, half, wallH, floor, ranges, total,
+    N, P, T, R, U, half, wallH, rise, floor, ranges, total,
     gateI, finishI, checkpoints, zones, shortcuts, funnels, towers, segStart, colliders: [...colliders, ...funnels.flatMap(f => [f.cone, f.wallMesh])],
     startI: 0, endI: N - 1,
   };

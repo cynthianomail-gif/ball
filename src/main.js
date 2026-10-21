@@ -207,6 +207,14 @@ function handleEvents() {
     switch (e.type) {
       case 'go': showMsg('GO!', '', 0.9); sfx.beep(880, 0.35); break;
       case 'hop': if (e.m.id === view.focusMarble().id) sfx.boing(); break;
+      case 'hit': {
+        // 越近鏡頭越大聲，遠的幾乎聽不到
+        const att = 1 / (1 + view.camera.position.distanceToSquared(e.m.body.translation()) / 300);
+        sfx.hit(e.strength / 14 * att, e.glass);
+        if (e.strength > 9 && e.m.id === view.focusMarble().id) view.shakeAmt = Math.min(0.5, view.shakeAmt + e.strength * 0.02);
+        break;
+      }
+      case 'clack': sfx.clack(1 / (1 + view.camera.position.distanceToSquared(e.pos) / 300)); break;
       case 'shortcut':
         showMsg('⚡ 抄近路！', `${e.m.name} 被金色積木彈飛了`, 1.8);
         if (isMine(e.m) || e.m.id === view.focusId) sfx.fanfare(); else sfx.whoosh();
@@ -386,6 +394,10 @@ function frame(now) {
   // 鏡頭平滑也照比賽時間走，快轉時鏡頭才跟得上
   view.render(phase === 'betting' ? 0 : acc / DT, phase === 'betting' || race.phase === 'countdown' ? dt : dt * BASE_SPEED * SPEEDS[speedK]);
   if (phase !== 'betting') { updateHud(); updateTags(); }
+  // 滾動聲跟著鏡頭跟隨的彈珠
+  const fm = phase === 'betting' ? null : view.focusMarble();
+  if (fm) { const v = fm.body.linvel(); sfx.roll(Math.hypot(v.x, v.y, v.z), fm.grounded && !fm.flight && race.phase === 'race'); }
+  else sfx.roll(0, false);
 
   if (showFps && (fpsTimer -= dt) < 0) {
     fpsTimer = 0.5;
