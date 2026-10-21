@@ -8,7 +8,8 @@ const $ = id => document.getElementById(id);
 const hex = c => '#' + c.toString(16).padStart(6, '0');
 const CHIPS = [10, 50, 100, 500];
 const START_COINS = 1000;
-const SPEEDS = [1, 2, 3];
+const SPEEDS = [1, 2, 3, 5];
+const MAX_STEPS = 15;         // 一幀最多跑幾步物理（5 倍速在 30fps 的手機上要 10 步）
 const FIELD = 10;            // 每場 10 顆彈珠
 // 10 種一眼分得出來的顏色：紅 橙 黃 綠 青 藍 紫 粉 棕 黑
 const FIELD_COLORS = [0xe63946, 0xff7b00, 0xffd60a, 0x2ec27e, 0x00b4d8, 0x1d4ed8, 0x8b3fd9, 0xff6fb5, 0x8d5524, 0x2b2b2b];
@@ -318,7 +319,7 @@ function updateHud() {
 
   // 鏡頭跟的彈珠在哪一關
   const fm = view.focusMarble();
-  const zi = track.zones.findIndex(z => fm.maxS < z.s1);
+  const zi = fm.funnel ? track.zones.findIndex(z => z.funnel === fm.funnel) : track.zones.findIndex(z => fm.maxS < z.s1);
   const z = track.zones[zi];
   setHtml('cpInfo', race.phase === 'countdown' ? '準備起跑…'
     : fm.finished ? `${fm.name} 已抵達終點`
@@ -367,13 +368,13 @@ function frame(now) {
     }
     acc += dt * SPEEDS[speedK];
     let n = 0;
-    while (acc >= DT && n < 8) {
+    while (acc >= DT && n < MAX_STEPS) {
       view.snapshot();
       race.step();
       handleEvents();
       acc -= DT; n++;
     }
-    if (n === 8) acc = 0;
+    if (n === MAX_STEPS) acc = 0;
     checkSettle();
   } else {
     // 下注時鏡頭在起跑線上方慢慢繞

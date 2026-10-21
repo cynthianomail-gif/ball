@@ -114,6 +114,7 @@ export class Race {
       }
     }
     this.pistonZone = track.zones.find(z => z.type === 'piston');
+    this.freeZones = track.zones.filter(z => z.type === 'pegs');
 
     // 檢查點：每過一個淘汰 elimRate（預設 20%）
     this.cps = track.checkpoints.map((i, k) => ({
@@ -219,8 +220,10 @@ export class Race {
       if (!m.alive) continue;
       this._sense(m);
       if (this.phase === 'race' && !m.finished && !m.flight && !m.funnel) {
-        if (m.ai) this._think(m, dt);
-        this._control(m, dt);
+        // 彈珠台裡完全交給重力和釘子（AI 的防側滑會把自己頂在釘子上）
+        const free = this.freeZones.some(z => m.s > z.s0 - 1 && m.s < z.s1);
+        if (m.ai && !free) this._think(m, dt);
+        if (!free) this._control(m, dt);
         this._pistonBoost(m);
       }
     }
@@ -357,8 +360,10 @@ export class Race {
       m.stillTimer += dt;
       if (m.stillTimer > 1.5) {
         m.stillTimer = 0;
-        const tv = t.T[m.idx], k = 6 * m.body.mass();
-        m.body.applyImpulse({ x: tv.x * k, y: 0, z: tv.z * k }, true);
+        // 換一條車道（不然 AI 會一直把自己頂在釘子上），再往前、往旁邊推一下
+        ai.laneTarget = (this.rand() * 2 - 1) * 0.45; ai.nextLane = 2;
+        const tv = t.T[m.idx], rv = t.R[m.idx], k = 6 * m.body.mass(), side = (this.rand() < 0.5 ? -1 : 1) * 3 * m.body.mass();
+        m.body.applyImpulse({ x: tv.x * k + rv.x * side, y: 0, z: tv.z * k + rv.z * side }, true);
       }
     } else m.stillTimer = 0;
 

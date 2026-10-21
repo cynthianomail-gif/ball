@@ -664,7 +664,7 @@ export class View {
     const t = this.track;
     this._arch(t.gateI + 2, bannerTex('起跑 START', null, '#fff7e0', '#e8483f'));
     const look = { cross: ['小心被十字擋下來', '#e8483f'], piston: ['金色積木會把你彈去抄近路', '#35b45b'], pegs: ['彈來彈去看運氣', '#8e5bd6'], funnel: ['轉轉轉，一顆一顆掉下去', '#f07c2a'] };
-    t.zones.forEach((z, k) => this._arch(z.type === 'funnel' ? z.i0 - Math.round(16 / STEP) : z.i0, bannerTex(`${k + 1}. ${ZONE_INFO[z.type].name}`, look[z.type][0], look[z.type][1], '#ffffff')));
+    t.zones.forEach((z, k) => this._arch(z.type === 'funnel' ? z.i0 - Math.round(36 / STEP) : z.i0, bannerTex(`${k + 1}. ${ZONE_INFO[z.type].name}`, look[z.type][0], look[z.type][1], '#ffffff')));
     this._arch(t.finishI, bannerTex('終點 FINISH', null, '#ffffff', '#111', true));
   }
 
