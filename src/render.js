@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { STEP, WALL_H, WALL_T, BEAM, colliderProfile, trackPoint, trackQuat, floorHeightAt, mulberry32, ZONE_INFO, FUNNEL_HOLE, FORK, forkHalf } from './track.js';
+import { STEP, WALL_H, WALL_T, BEAM, colliderProfile, trackPoint, trackQuat, floorHeightAt, mulberry32, FUNNEL_HOLE, FORK, forkHalf } from './track.js';
 import { RADIUS, PISTON, PEG_R } from './sim.js';
 
 const TOY = [0xe8483f, 0xf6b929, 0x2f7de1, 0x35b45b, 0xf07c2a, 0x8e5bd6];
@@ -88,7 +88,7 @@ function marbleTex(color, pattern, seed) {
   });
 }
 
-function bannerTex(text, sub, bg = '#fff7e0', fg = '#3a2a1a', checker = false) {
+function bannerTex(text, bg = '#fff7e0', fg = '#3a2a1a', checker = false) {
   return canvasTex(1024, 192, (g, w, h) => {
     g.fillStyle = bg; g.fillRect(0, 0, w, h);
     if (checker) {
@@ -100,8 +100,7 @@ function bannerTex(text, sub, bg = '#fff7e0', fg = '#3a2a1a', checker = false) {
     }
     g.fillStyle = fg; g.textAlign = 'center'; g.textBaseline = 'middle';
     g.font = 'bold 84px "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", sans-serif';
-    g.fillText(text, w / 2, sub ? h / 2 - 22 : h / 2);
-    if (sub) { g.font = 'bold 40px "Microsoft JhengHei", "PingFang TC", sans-serif'; g.fillText(sub, w / 2, h / 2 + 52); }
+    g.fillText(text, w / 2, h / 2);
   });
 }
 
@@ -761,13 +760,8 @@ export class View {
 
   _buildArches() {
     const t = this.track;
-    this._arch(t.gateI + 2, bannerTex('起跑 START', null, '#fff7e0', '#e8483f'));
-    const look = { cross: ['小心被十字擋下來', '#e8483f'], piston: ['踩到會被彈起來往前衝', '#35b45b'], pegs: ['彈來彈去看運氣', '#8e5bd6'], funnel: ['轉轉轉，一顆一顆掉下去', '#f07c2a'], zigzag: ['連續十個 180 度急轉彎', '#2f7de1'],
-      minifunnel: ['三個小漏斗連著轉', '#f07c2a'],
-      fork: ['分成左右兩道再匯合', '#2a9d8f'], water: ['進了水大家都變慢', '#2f7de1'] };
-    const before = { funnel: 36, minifunnel: 8, fork: -8, water: -4 };   // 拱門放在入口前多遠，才不會擋住鏡頭
-    t.zones.forEach((z, k) => this._arch(z.i0 - Math.round((before[z.type] || 0) / STEP), bannerTex(`${k + 1}. ${ZONE_INFO[z.type].name}`, look[z.type][0], look[z.type][1], '#ffffff')));
-    this._arch(t.finishI, bannerTex('終點 FINISH', null, '#ffffff', '#111', true));
+    this._arch(t.gateI + 2, bannerTex('START', '#fff7e0', '#e8483f'));
+    this._arch(t.finishI, bannerTex('FINISH', '#ffffff', '#111', true));
   }
 
   // ---------- 每場比賽 ----------

@@ -1,4 +1,4 @@
-import { buildTrack, STEP, ZONE_INFO } from './track.js';
+import { buildTrack, STEP } from './track.js';
 import { Race, initPhysics, DT } from './sim.js';
 import { View, CAM_MODES } from './render.js';
 import { priceRace } from './odds.js';
@@ -143,7 +143,6 @@ function startRace() {
   $('bet').classList.add('hidden');
   $('hud').classList.remove('hidden');
   buildTags(ids);
-  buildProgress(ids);
   updateFocusBtn();
 }
 
@@ -282,7 +281,7 @@ function checkSettle() {
   }, 1500);
 }
 
-// ---------- 名牌 & 進度條 & 排行 ----------
+// ---------- 名牌 & 小地圖 & 排行 ----------
 const tagEls = [];
 let focusTag = null;        // 跟隨中、但沒下注的彈珠也給一個名牌
 function buildTags(ids) {
@@ -315,53 +314,89 @@ function updateTags() {
   }
 }
 
-const dotEls = [];
-let barW = 0;
-addEventListener('resize', () => { barW = 0; });
-function buildProgress(ids) {
-  const bar = $('progress'), dots = $('dots');
-  bar.querySelectorAll('.tick').forEach(t => t.remove());
-  dots.innerHTML = ''; dotEls.length = 0;
-  const L = race.finishS;
-  for (const z of track.zones) {
-    const t = document.createElement('div');
-    t.className = 'tick zone ' + z.type;
-    t.style.left = (z.s0 / L * 100) + '%'; t.style.width = ((z.s1 - z.s0) / L * 100) + '%';
-    t.textContent = ZONE_INFO[z.type].icon;
-    bar.appendChild(t);
+// 小地圖：俯瞰整條賽道（x 向右、z 向下，不旋轉），底圖畫一次存在離屏 canvas，每幀只重畫彈珠點
+const mapBox = (() => {
+  const pad = 6;
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  const grow = (x, z, r) => { x0 = Math.min(x0, x - r); x1 = Math.max(x1, x + r); z0 = Math.min(z0, z - r); z1 = Math.max(z1, z + r); };
+  track.P.forEach((p, i) => grow(p.x, p.z, track.half[i]));
+  for (const f of track.funnels) grow(f.c[0], f.c[1], f.R);
+  return { x0: x0 - pad, z0: z0 - pad, w: x1 - x0 + 2 * pad, h: z1 - z0 + 2 * pad };
+})();
+const mini = { cv: $('miniMap'), base: document.createElement('canvas'), g: null, s: 1, dpr: 1, dirty: true };
+mini.cv.style.aspectRatio = `${mapBox.w} / ${mapBox.h}`;
+addEventListener('resize', () => { mini.dirty = true; });
+
+function buildMiniBase() {
+  const { cv, base } = mini, dpr = mini.dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = cv.width = base.width = Math.round(cv.clientWidth * dpr), h = cv.height = base.height = Math.round(cv.clientHeight * dpr);
+  if (!w || !h) return false;
+  mini.g = cv.getContext('2d');
+  const s = mini.s = Math.min(w / mapBox.w, h / mapBox.h);   // 世界 1 單位＝幾個畫素
+  const X = x => (x - mapBox.x0) * s, Y = z => (z - mapBox.z0) * s;
+  const g = base.getContext('2d'), { P, R, half, N } = track;
+  const skip = new Uint8Array(N);
+  for (const f of track.funnels) skip.fill(1, f.i0, f.i1 + 1);   // 漏斗裡沒有賽道，改畫圓
+  g.lineCap = 'round'; g.lineJoin = 'round';
+  for (const [col, extra] of [['#6b4a22', 2 * dpr], ['#f3d9a4', 0]]) {   // 先畫深色外框再畫淺色路面
+    g.strokeStyle = col;
+    for (let i = 0; i < N - 1; i++) {
+      if (skip[i]) continue;
+      g.lineWidth = Math.max(2.4 * dpr, 1.6 * half[i] * s) + extra;
+      g.beginPath(); g.moveTo(X(P[i].x), Y(P[i].z)); g.lineTo(X(P[i + 1].x), Y(P[i + 1].z)); g.stroke();
+    }
   }
-  const f = document.createElement('div'); f.className = 'tick finish'; f.style.left = '100%'; bar.appendChild(f);
-  for (const m of race.marbles) {
-    const d = document.createElement('div');
-    d.className = 'dot' + (ids.includes(m.id) ? ' me' : '');
-    d.style.background = hex(m.color);
-    dots.appendChild(d); dotEls.push(d);
+  g.fillStyle = '#f7c08a'; g.strokeStyle = '#6b4a22'; g.lineWidth = 1.5 * dpr;
+  for (const f of track.funnels) { g.beginPath(); g.arc(X(f.c[0]), Y(f.c[1]), Math.max(3 * dpr, f.R * s), 0, 7); g.fill(); g.stroke(); }
+  const bar = (i, col, dash) => {   // 橫跨賽道的起點／終點線
+    const hw = half[i] + 1.5;
+    g.beginPath(); g.moveTo(X(P[i].x - R[i].x * hw), Y(P[i].z - R[i].z * hw)); g.lineTo(X(P[i].x + R[i].x * hw), Y(P[i].z + R[i].z * hw));
+    g.lineCap = 'butt'; g.lineWidth = 3 * dpr; g.strokeStyle = col; g.setLineDash(dash.map(d => d * dpr)); g.stroke();
+  };
+  bar(track.gateI, '#e8483f', []);
+  bar(track.finishI, '#111', []);
+  bar(track.finishI, '#fff', [2, 2]);
+  return true;
+}
+
+function drawMini() {
+  if (mini.dirty) { if (!buildMiniBase()) return; mini.dirty = false; }
+  const { g, s, dpr, cv } = mini;
+  g.clearRect(0, 0, cv.width, cv.height);
+  g.drawImage(mini.base, 0, 0);
+  const at = m => { const p = m.body.translation(); return [(p.x - mapBox.x0) * s, (p.z - mapBox.z0) * s]; };
+  const alive = race.marbles.filter(m => m.alive);
+  g.lineWidth = dpr;
+  for (const m of alive) {
+    if (isMine(m)) continue;
+    const [x, y] = at(m);
+    g.beginPath(); g.arc(x, y, 2.6 * dpr, 0, 7);
+    g.fillStyle = hex(m.color); g.strokeStyle = 'rgba(0,0,0,.45)'; g.fill(); g.stroke();
   }
+  for (const m of alive) {   // 押注的彈珠大一點、加白框，畫在最上面
+    if (!isMine(m)) continue;
+    const [x, y] = at(m);
+    g.beginPath(); g.arc(x, y, 4 * dpr, 0, 7);
+    g.fillStyle = hex(m.color); g.fill();
+    g.lineWidth = 3.6 * dpr; g.strokeStyle = 'rgba(0,0,0,.55)'; g.stroke();
+    g.lineWidth = 1.8 * dpr; g.strokeStyle = '#fff'; g.stroke();
+  }
+  const [fx, fy] = at(view.focusMarble());   // 鏡頭跟的彈珠加一圈光環
+  g.beginPath(); g.arc(fx, fy, 7.5 * dpr, 0, 7);
+  g.lineWidth = 2 * dpr; g.strokeStyle = '#ffd400'; g.shadowColor = '#ffd400'; g.shadowBlur = 6 * dpr; g.stroke();
+  g.shadowBlur = 0;
 }
 
 function updateHud() {
-  const L = race.finishS;
-  if (!barW) barW = $('progress').clientWidth;
-  race.marbles.forEach((m, k) => {
-    dotEls[k].style.transform = `translateX(${(Math.min(1, Math.max(0, m.maxS / L)) * barW).toFixed(1)}px)`;
-  });
+  drawMini();
   hudTimer -= 1;
   if (hudTimer > 0) return;
   hudTimer = 6;
 
-  // 鏡頭跟的彈珠在哪一關
-  const fm = view.focusMarble();
-  const zi = fm.funnel ? track.zones.findIndex(z => z.funnels?.includes(fm.funnel)) : track.zones.findIndex(z => fm.maxS < z.s1);
-  const z = track.zones[zi];
-  setHtml('cpInfo', race.phase === 'countdown' ? '準備起跑…'
-    : fm.finished ? `${fm.name} 已抵達終點`
-    : !z ? '最後衝刺！'
-    : `${fm.maxS >= z.s0 ? '正在通過' : '下一關'}：${ZONE_INFO[z.type].icon} ${ZONE_INFO[z.type].name}`);
-
   const status = m => m.finished ? `🏁 第 ${m.place} 名` : `第 ${m.rank} 名`;
   setHtml('myBets', bets.length
-    ? bets.map(b => { const m = race.marbles[b.id]; return `<div><span class="sw" style="background:${hex(m.color)}"></span><b>${m.name}</b> ${TYPE_NAME[b.type]} ${b.amount}<span class="pos">${status(m)}</span></div>`; }).join('')
-    : '<div class="dim">觀戰中（沒有下注）<br>點右邊的名字可以跟隨</div>');
+    ? '<div class="list">' + bets.map(b => { const m = race.marbles[b.id]; return `<div><span class="sw" style="background:${hex(m.color)}"></span><b>${m.name}</b> ${TYPE_NAME[b.type]} ${b.amount}<span class="pos">${status(m)}</span></div>`; }).join('') + '</div>'
+    : '<div class="watching">觀看中</div>');
 
   // 沒下注時列出全部彈珠，方便點名字切換視角
   const top = race.ranking.slice(0, bets.length ? 5 : race.count);

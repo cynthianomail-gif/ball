@@ -39,16 +39,6 @@ const PROGRAM = [
   ['S', 40, 0.0],       // 終點（最後 30 是收集區）
 ];
 
-export const ZONE_INFO = {
-  cross: { name: '旋轉十字', icon: '✚' },
-  piston: { name: '跳跳積木', icon: '🧱' },
-  pegs: { name: '彈珠台', icon: '📍' },
-  funnel: { name: '漏斗', icon: '🌀' },
-  zigzag: { name: '十連發夾彎', icon: '🔁' },
-  minifunnel: { name: '連續小漏斗', icon: '🥣' },
-  fork: { name: '分岔匯流', icon: '🔀' },
-  water: { name: '水底隧道', icon: '🌊' },
-};
 export const FUNNEL_HOLE = 1.1;        // 洞口半徑：比兩顆並排（直徑 2）再大一點，才不會兩顆互卡堵住
 export const ZIGZAG_LANE = 0.7;        // 夾彎溝槽的半寬：剛好放得下一顆彈珠（直徑 1），只能排成一列
 const ZIGZAG_BANK = 0.5;              // 夾彎彎道的傾斜角（弧度）
