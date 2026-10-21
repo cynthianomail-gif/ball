@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { STEP, WALL_H, WALL_T, BEAM, EDGE_RISE, colliderProfile, trackPoint, trackQuat, floorHeightAt, mulberry32, ZONE_INFO, FUNNEL_HOLE } from './track.js';
-import { RADIUS, PISTON, PEG_R, goldLit } from './sim.js';
+import { RADIUS, PISTON, PEG_R, goldLit, TOWER } from './sim.js';
 
 const TOY = [0xe8483f, 0xf6b929, 0x2f7de1, 0x35b45b, 0xf07c2a, 0x8e5bd6];
 
@@ -107,8 +107,8 @@ function bannerTex(text, sub, bg = '#fff7e0', fg = '#3a2a1a', checker = false) {
 // ---------- 主畫面類別 ----------
 // 鏡頭模式：dist 在目標後方多遠、height 多高、ahead 看目標前方多遠
 export const CAM_MODES = [
-  { name: '上帝視角', dist: 8, height: 14, ahead: 2, lift: 0, shadow: 35 },
-  { name: '俯瞰全景', dist: 3, height: 42, ahead: 4, lift: 0, shadow: 60 },
+  { name: '俯瞰全景', dist: 3, height: 28, ahead: 3, lift: 0, shadow: 45 },   // 預設：從上面往下看
+  { name: '上帝視角', dist: 13, height: 22, ahead: 3, lift: 0, shadow: 45 },
   { name: '追尾', dist: 8.5, height: 3.6, ahead: 4, lift: 0.8, shadow: 40 },
 ];
 
@@ -376,6 +376,7 @@ export class View {
     const moving = new Set([this.gateMesh]);
     this.scene.traverse(o => {
       if (!o.isMesh || o.isInstancedMesh || moving.has(o) || !o.geometry.isBufferGeometry || o.geometry.type !== 'BoxGeometry') return;
+      if (o.userData.keep || o.parent?.userData.keep || (!Array.isArray(o.material) && o.material.transparent)) return;   // 會動的、透明的不要合併
       if (o.userData.letter) letters.push(o);
       else if (!Array.isArray(o.material) && o.material.isMeshStandardMaterial && !o.material.map) plain.push(o);
     });
@@ -611,7 +612,7 @@ export class View {
       const stripes = canvasTex(512, 32, (gc, w, h) => { TOY.forEach((c, k) => { gc.fillStyle = '#' + c.toString(16).padStart(6, '0'); for (let x = k * 32; x < w; x += 32 * TOY.length) gc.fillRect(x, 0, 32, h); }); }, true);
       stripes.repeat.set(3, 1);
       const wallMat = new THREE.MeshStandardMaterial({ map: stripes, roughness: 0.5, side: THREE.DoubleSide });
-      const H = WALL_H + 0.2, y0 = f.yRim - 0.2;
+      const H = f.wallH + 0.2, y0 = f.yRim - 0.2;
       for (const r of [f.R, f.R + WALL_T]) {
         const w = new THREE.Mesh(new THREE.CylinderGeometry(r, r, H, 64, 1, true), wallMat);
         w.position.set(f.c[0], y0 + H / 2, f.c[1]); w.castShadow = true; this.scene.add(w);
@@ -632,6 +633,47 @@ export class View {
         const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.9, ph, 12), pillarMat);
         pillar.position.set(px, ph / 2, pz); pillar.castShadow = true; this.scene.add(pillar);
       }
+    }
+
+    // 蹺蹺板塔：後面彩色板、前面玻璃、左右擋板，加上一片片蹺蹺板
+    this.rockerMeshes = [];
+    for (const w of t.towers) {
+      const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(
+        new THREE.Vector3(w.r[0], 0, w.r[1]), new THREE.Vector3(0, 1, 0), new THREE.Vector3(-w.f[0], 0, -w.f[1])));
+      const at = (x, y, z) => new THREE.Vector3(w.c[0] + w.r[0] * x - w.f[0] * z, y, w.c[1] + w.r[1] * x - w.f[1] * z);
+      const plate = (mat, x, y, z, sx, sy, sz) => {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
+        m.position.copy(at(x, y, z)); m.quaternion.copy(q); m.castShadow = !mat.transparent; m.receiveShadow = true;
+        this.scene.add(m);
+      };
+      const yLo = w.yExit + 1.8, yHiBack = w.yTop + 2.5, yHiFront = w.yTop - 1.4;
+      const stripes = canvasTex(64, 512, (g, cw, ch) => { TOY.forEach((c, k) => { g.fillStyle = '#' + c.toString(16).padStart(6, '0'); for (let y = k * 32; y < ch; y += 32 * TOY.length) g.fillRect(0, y, cw, 32); }); }, true);
+      stripes.repeat.set(1, (yHiBack - yLo) / 12);
+      const backMat = new THREE.MeshStandardMaterial({ map: stripes, roughness: 0.5 });
+      const glass = new THREE.MeshStandardMaterial({ color: 0xcfe8ff, transparent: true, opacity: 0.12, roughness: 0.05, envMapIntensity: 0.3, depthWrite: false });
+      const W = TOWER.width * 2, S = TOWER.slot;
+      plate(backMat, 0, (yLo + yHiBack) / 2, -S - 0.05, W + 0.4, yHiBack - yLo, 0.1);
+      plate(glass, 0, (yLo + yHiFront) / 2, S + 0.05, W + 0.4, yHiFront - yLo, 0.1);
+      for (const sx of [-1, 1]) plate(new THREE.MeshStandardMaterial({ color: TOY[sx > 0 ? 2 : 0], roughness: 0.5 }), sx * (TOWER.width + 0.1), (yLo + yHiBack) / 2, 0, 0.2, yHiBack - yLo, S * 2 + 0.2);
+      // 四根柱子撐著塔
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        const p = at(sx * (TOWER.width + 0.2), 0, sz * (S + 0.2)), h = yLo;
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.45, h, 10), new THREE.MeshStandardMaterial({ color: 0xf6b929, roughness: 0.5 }));
+        post.position.set(p.x, h / 2, p.z); post.castShadow = true; this.scene.add(post);
+      }
+      // 蹺蹺板（位置角度每幀從物理同步）
+      w.rockers.forEach((rk, k) => {
+        const grp = new THREE.Group();
+        grp.userData.keep = true;
+        const mat = new THREE.MeshStandardMaterial({ color: TOY[k % 2 ? 2 : 0], roughness: 0.4 });
+        const plank = new THREE.Mesh(new THREE.BoxGeometry(TOWER.half * 2, 0.2, (S - 0.05) * 2), mat);
+        const stop = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.2, (S - 0.05) * 2), mat);
+        stop.position.set(rk.side * (TOWER.half - 0.08), 0.5, 0);
+        const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, S * 2 + 0.2, 10).rotateX(Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0xffffff }));
+        for (const m of [plank, stop, pin]) { m.castShadow = true; grp.add(m); }
+        this.scene.add(grp);
+        this.rockerMeshes.push(grp);
+      });
     }
 
     // 起跑閘門
@@ -667,8 +709,10 @@ export class View {
   _buildArches() {
     const t = this.track;
     this._arch(t.gateI + 2, bannerTex('起跑 START', null, '#fff7e0', '#e8483f'));
-    const look = { cross: ['小心被十字擋下來', '#e8483f'], piston: ['金色積木會把你彈去抄近路', '#35b45b'], pegs: ['彈來彈去看運氣', '#8e5bd6'], funnel: ['轉轉轉，一顆一顆掉下去', '#f07c2a'], zigzag: ['連續十個 180 度急轉彎', '#2f7de1'] };
-    t.zones.forEach((z, k) => this._arch(z.type === 'funnel' ? z.i0 - Math.round(36 / STEP) : z.i0, bannerTex(`${k + 1}. ${ZONE_INFO[z.type].name}`, look[z.type][0], look[z.type][1], '#ffffff')));
+    const look = { cross: ['小心被十字擋下來', '#e8483f'], piston: ['金色積木會把你彈去抄近路', '#35b45b'], pegs: ['彈來彈去看運氣', '#8e5bd6'], funnel: ['轉轉轉，一顆一顆掉下去', '#f07c2a'], zigzag: ['連續十個 180 度急轉彎', '#2f7de1'],
+      minifunnel: ['三個小漏斗連著轉', '#f07c2a'], seesaw: ['左右左右掉下去', '#35b45b'] };
+    const before = { funnel: 36, minifunnel: 8, seesaw: 26 };   // 拱門放在入口前多遠，才不會擋住鏡頭
+    t.zones.forEach((z, k) => this._arch(z.i0 - Math.round((before[z.type] || 0) / STEP), bannerTex(`${k + 1}. ${ZONE_INFO[z.type].name}`, look[z.type][0], look[z.type][1], '#ffffff')));
     this._arch(t.finishI, bannerTex('終點 FINISH', null, '#ffffff', '#111', true));
   }
 
@@ -752,6 +796,11 @@ export class View {
       });
       mesh.instanceMatrix.needsUpdate = true;
     }
+    for (let k = 0; k < this.rockerMeshes.length; k++) {
+      const b = race.rockers[k].body;
+      this.rockerMeshes[k].position.copy(b.translation());
+      this.rockerMeshes[k].quaternion.copy(b.rotation());
+    }
     // 金色積木閃光：亮的時候（可以抄近路）發出金光
     for (const g of this.goldGroups) {
       const lit = goldLit(race.pistons[g.ids[0]], race.time);
@@ -783,6 +832,7 @@ export class View {
     let aim;
     if (this.focusId >= 0 && fm.id === this.focusId) aim = this.meshes[fm.id].position;
     else if (fm.funnel) aim = this._aim.set(fm.funnel.c[0], fm.funnel.yHole + 1, fm.funnel.c[1]);
+    else if (fm.tower) aim = this._aim.set(fm.tower.c[0], Math.max(fm.tower.yExit + 3, this.meshes[fm.id].position.y), fm.tower.c[1]);
     else {
       aim = trackPoint(t, Math.min(t.N - 1, Math.round(fm.maxS / STEP)), 0, RADIUS, this._aim);
       if (zz) {
@@ -798,6 +848,7 @@ export class View {
     // 方向只看前方一段賽道的走向（不看彈珠速度，撞到東西也不會晃）
     const want = this._want.set(0, 0, 0);
     if (zz) want.set(zz.dir[0], 0, zz.dir[1]);     // 夾彎裡鏡頭朝整串前進的方向，不跟著每個彎轉
+    else if (fm.tower) want.set(fm.tower.f[0], 0, fm.tower.f[1]);   // 蹺蹺板塔：從玻璃那面看進去
     else for (let d = 4; d <= 24; d += 4) { const tt = t.T[Math.min(t.N - 1, fm.idx + d)]; want.x += tt.x; want.z += tt.z; }
     want.normalize();
     if (!this.camInit) this.camFwd.copy(want);
@@ -811,6 +862,11 @@ export class View {
     desired.y += cm.height;
     const look = this._look.copy(target).addScaledVector(fwd, cm.ahead);
     look.y += cm.lift;
+    if (fm.tower) {
+      // 蹺蹺板塔：不管哪種鏡頭，都從玻璃那面正對著看，才看得到左右翻
+      desired.set(target.x - fm.tower.f[0] * 15, target.y + 2.5, target.z - fm.tower.f[1] * 15);
+      look.copy(target);
+    }
     if (!this.camInit) { this.camera.position.copy(desired); this.camLook.copy(look); this.camInit = true; }
     const k = 1 - Math.exp(-dt * 6);
     this.camera.position.lerp(desired, k);

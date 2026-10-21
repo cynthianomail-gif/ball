@@ -1,7 +1,7 @@
 // 物理世界 + 比賽規則 + AI（不含畫面，可在 Node 裡跑無頭模擬）
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { STEP, trackPoint, trackQuat, mulberry32, floorHeightAt, WALL_H, FUNNEL_HOLE, FUNNEL_LANE } from './track.js';
+import { STEP, trackPoint, trackQuat, mulberry32, floorHeightAt, WALL_H, FUNNEL_HOLE } from './track.js';
 
 export const RADIUS = 0.5;
 export const GRAVITY = 30;
@@ -11,6 +11,8 @@ export const DT = 1 / 60;
 // 升起高度要比彈珠半徑低，彈珠才滾得過去，不會像撞牆
 export const PISTON = { size: 0.95, lift: 0.32, omega: 5, hop: 4, kick: 14, maxSpeed: 34 };
 export const PEG_R = 0.28;
+// 蹺蹺板塔：slot 槽的半寬（前後）、width 塔的半寬（左右）、half 板子半長、offset 板子中心離通道多遠、tilt 傾斜角、speed 翻轉速度
+export const TOWER = { slot: 0.8, width: 3.45, half: 1.8, offset: 1.5, tilt: 0.3, speed: 4 };
 // 金色積木：亮著的時候被它彈到，就飛過 U 字內側直接落到回程直線
 // period 閃爍週期、litFrac 一個週期裡亮多久、time 飛行秒數、land 落地後的最低速度
 export const GOLD = { period: 1.6, litFrac: 0.6, time: 1.8, land: 18 };
@@ -48,6 +50,7 @@ const _v = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _yAxis = new THREE.Vector3(0, 1, 0);
+const _zAxis = new THREE.Vector3(0, 0, 1);
 
 export class Race {
   // player: false 時沒有玩家彈珠，全部交給 AI（下注模式）
@@ -78,8 +81,9 @@ export class Race {
     this._wall(track.startI + 1, 0.5);
     this._wall(track.endI - 1, 0.5);
     this.gate = this._wall(track.gateI, 0.3);
-    // 漏斗洞口下方的出口賽道後面加一道擋板，接住掉下來的彈珠
-    for (const f of track.funnels) this._wall(f.exitI, 0.4);
+    // 漏斗洞口、蹺蹺板塔下方的出口賽道後面加一道擋板，接住掉下來的彈珠
+    for (const f of [...track.funnels, ...track.towers]) this._wall(f.exitI, 0.4);
+    this._buildTowers();
 
     // 障礙區
     this.crosses = [];
@@ -157,7 +161,7 @@ export class Race {
         pattern: n % 6,
         body, collider, alive: true, finished: false, place: 0,
         row: r, idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0,
-        grounded: false, dashCd: 0, hopCd: 0, stillTimer: 0, flight: null, funnel: null, shortcuts: 0,
+        grounded: false, dashCd: 0, hopCd: 0, stillTimer: 0, flight: null, funnel: null, tower: null, shortcuts: 0,
         stats: baseStats(), upgrades: [], elimT: 0, rank: n + 1,
         input: { x: 0, z: 0, dash: false },
         ai: (isPlayer && !autopilot) ? null : this._makeAI(),
@@ -212,6 +216,7 @@ export class Race {
       _q.copy(c.base).multiply(_q2.setFromAxisAngle(_yAxis, c.angle));
       c.body.setNextKinematicRotation(_q);
     }
+    this._moveRockers(dt);
     for (const pt of this.pistons) {
       this._movePiston(pt, this.time);
       pt.body.setNextKinematicTranslation(trackPoint(this.track, pt.i, pt.lat, pt.top - PISTON.size, _v));
@@ -220,7 +225,7 @@ export class Race {
     for (const m of this.marbles) {
       if (!m.alive) continue;
       this._sense(m);
-      if (this.phase === 'race' && !m.finished && !m.flight && !m.funnel) {
+      if (this.phase === 'race' && !m.finished && !m.flight && !m.funnel && !m.tower) {
         // 彈珠台、夾彎裡完全交給重力（AI 的防側滑會把自己頂在釘子或牆上）
         const free = this.freeZones.some(z => m.s > z.s0 - 1 && m.s < z.s1);
         if (m.ai && !free) this._think(m, dt);
@@ -391,7 +396,7 @@ export class Race {
       this._land(m);
     }
     const p = m.body.translation();
-    if (this._inFunnel(m, p)) return;
+    if (this._inFunnel(m, p) || this._inTower(m, p)) return;
     let best = m.idx, bd = Infinity;
     // 不要往回找到斷開的另一段（漏斗洞口上下）
     const lo = Math.max(0, m.idx - 20, t.segStart[m.idx]), hi = Math.min(t.N - 1, m.idx + 40);
@@ -422,10 +427,10 @@ export class Race {
   _inFunnel(m, p) {
     const t = this.track;
     for (const f of t.funnels) {
-      if (m.idx < f.i0 - 10 || m.idx > f.i1) continue;
+      // 已經滑到這個漏斗的入口末端才算（連續小漏斗時，上一個漏斗的出口就在下一個的正上方）
+      if (m.funnel !== f && (m.idx < f.i0 - 2 || m.idx > f.i1)) continue;
       const r = Math.hypot(p.x - f.c[0], p.z - f.c[1]);
-      if (r < f.R + 0.5 && p.y > f.yHole - 1.2 && p.y < f.yRim + 6) {
-        if (!m.funnel && r > f.R - FUNNEL_LANE * 2 - 0.5 && m.idx < f.i0) return false;   // 還在入口賽道上
+      if (r < f.R + 0.5 && p.y > f.yHole - 1.2 && p.y < f.yRim + f.wallH + 3) {
         m.funnel = f;
         const frac = Math.min(1, Math.max(0, (f.R - r) / (f.R - FUNNEL_HOLE)));
         m.idx = Math.max(m.idx, f.i0 + Math.round(frac * (f.i1 - f.i0)));
@@ -452,6 +457,103 @@ export class Race {
       }
     }
     m.funnel = null;
+    return false;
+  }
+
+  // ---- 蹺蹺板塔 ----
+  // 每個塔用自己的座標：x＝右手邊、y＝上、z＝往後（跟 trackQuat 一樣）
+  _towerQuat(w, out = new THREE.Quaternion()) {
+    const r = _v.set(w.r[0], 0, w.r[1]), b = new THREE.Vector3(-w.f[0], 0, -w.f[1]);
+    return out.setFromRotationMatrix(new THREE.Matrix4().makeBasis(r.clone(), _yAxis, b));
+  }
+
+  _buildTowers() {
+    this.rockers = [];
+    const fixed = (w, q, x, y, z, hx, hy, hz) => {
+      const p = new THREE.Vector3(w.c[0] + w.r[0] * x - w.f[0] * z, y, w.c[1] + w.r[1] * x - w.f[1] * z);
+      const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(p.x, p.y, p.z).setRotation(q));
+      this.world.createCollider(RAPIER.ColliderDesc.cuboid(hx, hy, hz).setFriction(0.3).setRestitution(0.2), body);
+    };
+    for (const w of this.track.towers) {
+      const q = this._towerQuat(w);
+      const yLo = w.yExit + 1.8, yHiBack = w.yTop + 2.5, yHiFront = w.yTop - 1.4;
+      // 前（靠入口，玻璃）、後兩片板子夾出 1.6 寬的槽，左右兩邊再擋起來
+      fixed(w, q, 0, (yLo + yHiFront) / 2, TOWER.slot + 0.05, TOWER.width, (yHiFront - yLo) / 2, 0.05);
+      fixed(w, q, 0, (yLo + yHiBack) / 2, -TOWER.slot - 0.05, TOWER.width, (yHiBack - yLo) / 2, 0.05);
+      for (const sx of [-1, 1]) fixed(w, q, sx * (TOWER.width + 0.1), (yLo + yHiBack) / 2, 0, 0.1, (yHiBack - yLo) / 2, TOWER.slot + 0.1);
+      // 蹺蹺板：中心在左右兩邊交錯，內側那端都伸到中間的落下通道
+      for (const rk of w.rockers) {
+        const x = rk.side * TOWER.offset;
+        const pos = new THREE.Vector3(w.c[0] + w.r[0] * x, rk.y, w.c[1] + w.r[1] * x);
+        const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(pos.x, pos.y, pos.z).setRotation(q));
+        this.world.createCollider(RAPIER.ColliderDesc.cuboid(TOWER.half, 0.1, TOWER.slot - 0.05).setFriction(0.5).setRestitution(0.1), body);
+        // 外側那端有個高高的擋頭，彈珠不會從外面掉出去，也不會卡在擋頭和側牆之間
+        this.world.createCollider(RAPIER.ColliderDesc.cuboid(0.08, 0.6, TOWER.slot - 0.05).setTranslation(rk.side * (TOWER.half - 0.08), 0.5, 0), body);
+        const rest = -rk.side * TOWER.tilt;      // 平常：內側那端翹起來
+        this.rockers.push({ w, rk, body, pos, base: q.clone(), angle: rest, rest, flipped: false, empty: 0 });
+      }
+    }
+  }
+
+  // 彈珠滾到外側那半邊 → 蹺蹺板翻過去（內側變低），彈珠滾回來從內側掉到下一個；空了才翻回來
+  _moveRockers(dt) {
+    for (const rc of this.rockers) {
+      const { w, rk } = rc;
+      let outer = false, on = false;
+      for (const m of this.marbles) {
+        if (m.tower !== w) continue;
+        const p = m.body.translation();
+        const dx = (p.x - rc.pos.x) * w.r[0] + (p.z - rc.pos.z) * w.r[1], dy = p.y - rk.y;
+        if (dy < -0.6 || dy > 1.6 || Math.abs(dx) > TOWER.half + 0.3) continue;
+        on = true;
+        if (dx * rk.side > 0.4) outer = true;
+      }
+      if (outer) rc.flipped = true;
+      rc.empty = on ? 0 : rc.empty + dt;
+      if (rc.empty > 0.25) rc.flipped = false;
+      const target = rc.flipped ? -rc.rest : rc.rest;
+      const step = TOWER.speed * dt;
+      rc.angle += Math.max(-step, Math.min(step, target - rc.angle));
+      _q.copy(rc.base).multiply(_q2.setFromAxisAngle(_zAxis, rc.angle));
+      rc.body.setNextKinematicRotation(_q);
+    }
+  }
+
+  // 在蹺蹺板塔裡：進度用高度算，掉到塔底就接回出口賽道
+  _inTower(m, p) {
+    for (const w of this.track.towers) {
+      if (m.idx < w.i0 - 10 || m.idx > w.i1) continue;
+      const dx = (p.x - w.c[0]) * w.r[0] + (p.z - w.c[1]) * w.r[1];
+      const dz = (p.x - w.c[0]) * w.f[0] + (p.z - w.c[1]) * w.f[1];
+      const inside = Math.abs(dx) < TOWER.width + 0.5 && Math.abs(dz) < TOWER.slot + 1.2 && p.y < w.yTop + 3;
+      if (inside && p.y > w.yExit + 0.9 && (m.tower || dz > -0.6)) {
+        m.tower = w;
+        const frac = Math.min(1, Math.max(0, (w.yTop - p.y) / (w.yTop - w.yExit)));
+        m.idx = Math.max(m.idx, w.i0 + Math.round(frac * (w.i1 - w.i0)));
+        m.s = m.idx * STEP; m.lat = 0; m.h = 0;
+        if (m.s > m.maxS) m.maxS = m.s;
+        m.offTimer = 0;
+        // 卡在板子上不動：往中間推一下
+        const v = m.body.linvel();
+        if (Math.hypot(v.x, v.y, v.z) < 0.3) {
+          m.stillTimer += DT;
+          if (m.stillTimer > 1) {
+            m.stillTimer = 0;
+            const k = -Math.sign(dx || 1) * 2 * m.body.mass();
+            m.body.applyImpulse({ x: w.r[0] * k, y: 0, z: w.r[1] * k }, true);
+          }
+        } else m.stillTimer = 0;
+        return true;
+      }
+      if (m.tower === w) {
+        m.tower = null;
+        // 只有從塔底掉出去才接到出口；從上面彈出去（彈回入口、跳太高）就照一般方式找位置
+        if (p.y <= w.yExit + 0.9) m.idx = w.exitI + Math.round(2 / STEP);
+        else m.idx = Math.min(m.idx, w.i0);
+        return false;
+      }
+    }
+    m.tower = null;
     return false;
   }
 

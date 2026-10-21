@@ -73,7 +73,7 @@ function setupRace() {
   view.setRace(race);
   view.setMarked([]);
   view.focusId = -1;
-  view.camMode = 0;   // 預設上帝視角（下注畫面背景也是）
+  view.camMode = 0;   // 預設俯瞰全景（下注畫面背景也是）
   phase = 'betting'; bets = []; settled = false; acc = 0; lastCount = 4;
   $('tags').innerHTML = '';
   $('hud').classList.add('hidden');
@@ -320,7 +320,7 @@ function updateHud() {
 
   // 鏡頭跟的彈珠在哪一關
   const fm = view.focusMarble();
-  const zi = fm.funnel ? track.zones.findIndex(z => z.funnel === fm.funnel) : track.zones.findIndex(z => fm.maxS < z.s1);
+  const zi = fm.funnel ? track.zones.findIndex(z => z.funnels?.includes(fm.funnel)) : fm.tower ? track.zones.findIndex(z => z.tower === fm.tower) : track.zones.findIndex(z => fm.maxS < z.s1);
   const z = track.zones[zi];
   setHtml('cpInfo', race.phase === 'countdown' ? '準備起跑…'
     : fm.finished ? `${fm.name} 已抵達終點`

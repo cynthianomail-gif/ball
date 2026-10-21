@@ -18,7 +18,7 @@ console.log('自我交叉：', bad ? `s=${bad.s1} 和 s=${bad.s2} 只差 ${bad.d
 for (const f of t.funnels) {
   let worst = Infinity, at = null;
   for (let i = 0; i < t.N; i++) {
-    if (i >= f.i0 - 60 && i <= f.i1 + 8) continue;
+    if (i >= f.i0 - 60 && i <= f.i1 + Math.round((f.R + 6) / STEP)) continue;   // 自己洞口下方的出口本來就在下面
     const p = t.P[i], r = Math.hypot(p.x - f.c[0], p.z - f.c[1]);
     if (r > f.R + t.half[i] + 1) continue;
     const coneY = f.yRim - f.depth * funnelDepth(Math.max(1.2, Math.min(f.R, r)), f.R);
