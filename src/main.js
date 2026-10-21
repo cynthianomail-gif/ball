@@ -1,6 +1,6 @@
 import { buildTrack, STEP } from './track.js';
 import { Race, initPhysics, DT } from './sim.js';
-import { View } from './render.js';
+import { View, CAM_MODES } from './render.js';
 import { priceRace } from './odds.js';
 import * as sfx from './sound.js';
 
@@ -69,7 +69,7 @@ function setupRace() {
   view.setRace(race);
   view.setMarked([]);
   view.focusId = -1;
-  view.camMode = 1;
+  view.camMode = 1;   // 下注時用俯瞰全景
   phase = 'betting'; bets = []; settled = false; acc = 0; lastCount = 4;
   $('tags').innerHTML = '';
   $('hud').classList.add('hidden');
@@ -135,6 +135,7 @@ function startRace() {
   view.setMarked(ids);
   view.focusId = ids.length ? ids[0] : -1;
   view.camMode = 0;
+  $('btnCam').textContent = '📷 ' + CAM_MODES[0].name;
   $('bet').classList.add('hidden');
   $('hud').classList.remove('hidden');
   buildTags(ids);
@@ -156,11 +157,15 @@ function cycleSpeed() {
   $('btnSpeed').textContent = `⏩ ${SPEEDS[speedK]}x`;
 }
 $('btnFocus').onclick = cycleFocus;
-$('btnCam').onclick = () => { view.camMode = (view.camMode + 1) % 3; };
+function cycleCam() {
+  view.camMode = (view.camMode + 1) % CAM_MODES.length;
+  $('btnCam').textContent = '📷 ' + CAM_MODES[view.camMode].name;
+}
+$('btnCam').onclick = cycleCam;
 $('btnSpeed').onclick = cycleSpeed;
 addEventListener('keydown', e => {
   if (!race || phase === 'betting' || e.repeat) return;
-  if (e.code === 'KeyC') view.camMode = (view.camMode + 1) % 3;
+  if (e.code === 'KeyC') cycleCam();
   if (e.code === 'KeyF') cycleFocus();
   if (e.code === 'Space') { cycleSpeed(); e.preventDefault(); }
 });

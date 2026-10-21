@@ -104,6 +104,13 @@ function bannerTex(text, sub, bg = '#fff7e0', fg = '#3a2a1a', checker = false) {
 }
 
 // ---------- 主畫面類別 ----------
+// 鏡頭模式：dist 在目標後方多遠、height 多高、ahead 看目標前方多遠
+export const CAM_MODES = [
+  { name: '上帝視角', dist: 13, height: 22, ahead: 3, lift: 0, shadow: 45 },
+  { name: '俯瞰全景', dist: 3, height: 42, ahead: 4, lift: 0, shadow: 60 },
+  { name: '追尾', dist: 8.5, height: 3.6, ahead: 4, lift: 0.8, shadow: 40 },
+];
+
 export class View {
   constructor(canvas, track) {
     this.track = track;
@@ -124,7 +131,7 @@ export class View {
     scene.environmentIntensity = 0.45;
 
     this.camera = new THREE.PerspectiveCamera(62, 1, 0.1, 1200);
-    this.camMode = 0;           // 0 追尾 1 高空 2 側面
+    this.camMode = 0;           // CAM_MODES 的索引
     this.yawOffset = 0;
     this.dragging = false;
     this.camFwd = new THREE.Vector3(1, 0, 0);
@@ -572,18 +579,23 @@ export class View {
     const fwd = this.camFwd.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yawOffset);
     this.viewFwd = fwd;
 
-    const [dist, height] = [[8.5, 3.6], [17, 13], [4.5, 1.6]][this.camMode];
-    const desired = target.clone().addScaledVector(fwd, -dist);
-    desired.y += height;
-    const look = target.clone().addScaledVector(fwd, this.camMode === 1 ? 6 : 4);
-    look.y += this.camMode === 1 ? 0 : 0.8;
+    const cm = CAM_MODES[this.camMode];
+    const desired = target.clone().addScaledVector(fwd, -cm.dist);
+    desired.y += cm.height;
+    const look = target.clone().addScaledVector(fwd, cm.ahead);
+    look.y += cm.lift;
     if (!this.camInit) { this.camera.position.copy(desired); this.camLook.copy(look); this.camInit = true; }
     const k = 1 - Math.exp(-dt * 6);
     this.camera.position.lerp(desired, k);
     this.camLook.lerp(look, 1 - Math.exp(-dt * 10));
     this.camera.lookAt(this.camLook);
 
-    // 陽光陰影跟著鏡頭目標
+    // 陽光陰影跟著鏡頭目標，鏡頭越高陰影範圍越大
+    const sc = this.sun.shadow.camera;
+    if (sc.right !== cm.shadow) {
+      sc.left = sc.bottom = -cm.shadow; sc.right = sc.top = cm.shadow;
+      sc.updateProjectionMatrix();
+    }
     this.sun.position.copy(target).add(this.sunOffset);
     this.sun.target.position.copy(target);
 
