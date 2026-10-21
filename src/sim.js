@@ -43,7 +43,8 @@ const _q2 = new THREE.Quaternion();
 const _yAxis = new THREE.Vector3(0, 1, 0);
 
 export class Race {
-  constructor(track, { count = 50, seed = 1, playerColor = null, autopilot = false, difficulty = 1 } = {}) {
+  // player: false 時沒有玩家彈珠，全部交給 AI（下注模式）
+  constructor(track, { count = 50, seed = 1, playerColor = null, autopilot = false, difficulty = 1, player = true } = {}) {
     this.track = track;
     this.count = count;
     this.rand = mulberry32(seed);
@@ -105,10 +106,10 @@ export class Race {
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) slots.push([r, c]);
     // 玩家放中間那排
     const pr = Math.floor(rows / 2), pc = 2 + Math.floor(this.rand() * 6);
-    const playerSlot = slots.findIndex(([r, c]) => r === pr && c === pc);
+    const playerSlot = player ? slots.findIndex(([r, c]) => r === pr && c === pc) : -1;
     const others = slots.filter((_, k) => k !== playerSlot);
     for (let k = others.length - 1; k > 0; k--) { const j = Math.floor(this.rand() * (k + 1)); [others[k], others[j]] = [others[j], others[k]]; }
-    const order = [slots[playerSlot], ...others];
+    const order = player ? [slots[playerSlot], ...others] : others;
 
     const names = MARBLE_NAMES.slice();
     for (let k = names.length - 1; k > 0; k--) { const j = Math.floor(this.rand() * (k + 1)); [names[k], names[j]] = [names[j], names[k]]; }
@@ -123,13 +124,13 @@ export class Race {
       const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(p.x, p.y, p.z)
         .setCcdEnabled(true).setLinearDamping(0.12).setAngularDamping(0.4));
       const collider = world.createCollider(RAPIER.ColliderDesc.ball(RADIUS).setDensity(1).setFriction(0.8).setRestitution(0.3), body);
-      const isPlayer = n === 0;
+      const isPlayer = player && n === 0;
       const m = {
         id: n, isPlayer, name: isPlayer ? '你' : names[n % names.length],
         color: isPlayer && playerColor != null ? playerColor : PALETTE[(n * 7) % PALETTE.length],
         pattern: n % 6,
         body, collider, alive: true, finished: false, place: 0,
-        idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0,
+        row: r, idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0,
         grounded: false, jumpCd: 0, dashCd: 0, airJumpsLeft: 0, stillTimer: 0,
         stats: baseStats(), upgrades: [], elimT: 0, rank: n + 1,
         input: { x: 0, z: 0, jump: false, dash: false },
@@ -145,7 +146,8 @@ export class Race {
       }
       this.marbles.push(m);
     }
-    this.player = this.marbles[0];
+    this.player = player ? this.marbles[0] : null;
+    this._rank();
   }
 
   _makeAI() {

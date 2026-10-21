@@ -3,64 +3,62 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-  <title>彈珠大逃殺 Marble Rush</title>
-  <link rel="stylesheet" href="/src/style.css" />
+  <title>彈珠賽場 Marble Derby</title>
+  <link rel="stylesheet" href="./src/style.css" />
 </head>
 <body>
   <canvas id="game"></canvas>
+  <div id="tags"></div>
 
   <div id="hud" class="hidden">
-    <div id="rankBox"><div id="rank">-</div><div id="alive"></div></div>
+    <div id="myBets"></div>
     <div id="progressWrap">
       <div id="cpInfo"></div>
       <div id="progress"><div id="dots"></div></div>
     </div>
     <ol id="board"></ol>
-    <div id="abilities"></div>
     <div id="msg"></div>
     <div id="sub"></div>
-  </div>
-
-  <div id="cards" class="hidden">
-    <div class="cardsTitle">晉級！選一張升級卡 <span id="cardTimer"></span></div>
-    <div id="cardList"></div>
-  </div>
-
-  <div id="touch" class="hidden">
-    <div id="stickZone"><div id="stickBase"><div id="stickKnob"></div></div></div>
-    <button id="btnJump">跳</button>
-    <button id="btnDash">衝</button>
-    <button id="btnCam">📷</button>
-    <button id="btnRespawn">↺</button>
-  </div>
-
-  <div id="menu" class="panel">
-    <h1>彈珠大逃殺</h1>
-    <p class="tag">在巨大的臥室裡，和一大群彈珠一起衝下積木賽道。<br>每過一個檢查點，最後面的彈珠就會被淘汰！</p>
-    <div class="row"><span>你的彈珠顏色</span><div id="colors"></div></div>
-    <div class="row"><span>彈珠數量</span>
-      <select id="count"><option value="50">50 顆（標準）</option><option value="30">30 顆</option><option value="20">20 顆（手機省電）</option></select>
+    <div id="ctrl">
+      <button id="btnFocus">👁 跟隨</button>
+      <button id="btnCam">📷 鏡頭</button>
+      <button id="btnSpeed">⏩ 1x</button>
+      <button id="btnNext" class="hidden">下一場 ▶</button>
     </div>
-    <div class="row"><span>難度</span>
-      <select id="diff"><option value="0">簡單</option><option value="1" selected>普通</option><option value="2">困難</option></select>
+  </div>
+
+  <div id="bet" class="panel wide hidden">
+    <div class="betHead">
+      <div><b id="raceNo"></b><span class="dim">　選彈珠下注，再按開賽</span></div>
+      <div class="coins">💰 <span id="coins"></span></div>
     </div>
-    <button id="startBtn" class="big">開始比賽</button>
-    <div class="help">
-      <div><b>W A S D / 方向鍵</b> 移動</div>
-      <div><b>空白鍵</b> 跳躍　<b>Shift / E</b> 衝刺</div>
-      <div><b>C</b> 切換鏡頭　<b>R</b> 回到賽道　<b>拖曳滑鼠</b> 轉視角</div>
-      <div><b>1 2 3</b> 選升級卡</div>
+    <div id="bankrupt" class="hidden">錢輸光了！送你 1000 救濟金，再來一次 🍀</div>
+    <div class="row">
+      <span>籌碼</span>
+      <div id="chips"></div>
+    </div>
+    <div class="row small">
+      <span>參賽彈珠</span>
+      <select id="count"><option value="16">16 顆</option><option value="20" selected>20 顆</option><option value="30">30 顆</option></select>
+    </div>
+    <div class="legend dim">★ 實力　<b>獨贏</b>＝跑第 1 名　<b>前三</b>＝跑進前 3 名　賠率含本金</div>
+    <div id="field"></div>
+    <div class="betFoot">
+      <div>已下注 <b id="staked">0</b></div>
+      <button id="clearBtn">清除</button>
+      <button id="goBtn" class="big">開賽！</button>
     </div>
   </div>
 
   <div id="result" class="panel hidden">
     <h1 id="resTitle"></h1>
-    <p id="resText"></p>
-    <button id="againBtn" class="big">再玩一次</button>
-    <button id="watchBtn">繼續觀戰</button>
+    <ol id="podium"></ol>
+    <div id="payout"></div>
+    <button id="nextBtn" class="big">下一場</button>
+    <button id="watchBtn">繼續觀看</button>
   </div>
 
   <div id="loading">載入中…</div>
-  <script type="module" src="/src/main.js"></script>
+  <script type="module" src="./src/main.js"></script>
 </body>
 </html>

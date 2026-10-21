@@ -149,10 +149,11 @@ export class View {
     this.marbleGroup = new THREE.Group();
     scene.add(this.marbleGroup);
 
-    // 玩家標記
-    const arrow = this.arrow = new THREE.Mesh(new THREE.ConeGeometry(0.35, 0.7, 16), new THREE.MeshBasicMaterial({ color: 0xffd400 }));
-    arrow.rotation.x = Math.PI;
-    scene.add(arrow);
+    // 下注彈珠頭上的箭頭
+    this.markerGeo = new THREE.ConeGeometry(0.35, 0.7, 16);
+    this.markerMat = new THREE.MeshBasicMaterial({ color: 0xffd400 });
+    this.markers = [];
+    this.focusId = -1;          // 鏡頭跟隨的彈珠，-1 = 跟領先者
 
     this.resize();
     addEventListener('resize', () => this.resize());
@@ -510,10 +511,22 @@ export class View {
     }
   }
 
+  // 在這些彈珠頭上放箭頭
+  setMarked(ids) {
+    for (const mk of this.markers) this.scene.remove(mk.mesh);
+    this.markers = ids.map(id => {
+      const mesh = new THREE.Mesh(this.markerGeo, this.markerMat);
+      mesh.rotation.x = Math.PI;
+      this.scene.add(mesh);
+      return { id, mesh };
+    });
+  }
+
   focusMarble() {
     const race = this.race;
-    if (race.player.alive) return race.player;
-    return race.ranking.find(m => m.alive) || race.player;
+    const f = race.marbles[this.focusId];
+    if (f && f.alive) return f;
+    return race.ranking.find(m => m.alive) || race.ranking[0];
   }
 
   render(alpha, dt) {
@@ -574,11 +587,13 @@ export class View {
     this.sun.position.copy(target).add(this.sunOffset);
     this.sun.target.position.copy(target);
 
-    // 玩家箭頭
-    const pm = this.meshes[0];
-    this.arrow.visible = race.player.alive;
-    this.arrow.position.copy(pm.position);
-    this.arrow.position.y += 1.5 + Math.sin(performance.now() / 200) * 0.15;
+    // 下注彈珠的箭頭
+    const bob = 1.5 + Math.sin(performance.now() / 200) * 0.15;
+    for (const mk of this.markers) {
+      mk.mesh.visible = race.marbles[mk.id].alive;
+      mk.mesh.position.copy(this.meshes[mk.id].position);
+      mk.mesh.position.y += bob;
+    }
 
     this.renderer.render(this.scene, this.camera);
   }

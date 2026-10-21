@@ -1,12 +1,24 @@
-import * as THREE from 'three';
 import { buildTrack, STEP } from './track.js';
-import { Race, initPhysics, DT, UPGRADES } from './sim.js';
+import { Race, initPhysics, DT } from './sim.js';
 import { View } from './render.js';
+import { priceRace } from './odds.js';
 import * as sfx from './sound.js';
 
 const $ = id => document.getElementById(id);
-const COLORS = [0xffd400, 0xe63946, 0x1d7af3, 0x2ec27e, 0x9b5de5, 0xff6fb5, 0x00b4d8, 0xff7b00, 0x222222, 0xffffff];
-let playerColor = COLORS[0];
+const hex = c => '#' + c.toString(16).padStart(6, '0');
+const CHIPS = [10, 50, 100, 500];
+const START_COINS = 1000;
+const SPEEDS = [1, 2, 3];
+const TYPE_NAME = { win: '獨贏', top3: '前三' };
+
+// 錢包存在瀏覽器裡（無痕模式存不了也照樣能玩）
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 忽略 */ } },
+};
+let coins = store.get('marbleDerby.coins', START_COINS);
+let raceNo = store.get('marbleDerby.raceNo', 0);
+const saveWallet = () => { store.set('marbleDerby.coins', coins); store.set('marbleDerby.raceNo', raceNo); };
 
 await initPhysics();
 const track = buildTrack();
@@ -14,140 +26,150 @@ const view = new View($('game'), track);
 $('loading').remove();
 
 let race = null;
+let phase = 'betting';      // betting → racing → done
+let bets = [];              // { id, type, amount, odds }
+let chip = 50;
+let speedK = 0;
 let acc = 0, last = performance.now();
-let timeScale = 1;
-let cardState = null;     // { cards, until }
-let over = false;
-let msgTimer = 0;
-let respawnCd = 0;
-let hudTimer = 0;
-let lastCount = 0;
+let msgTimer = 0, hudTimer = 0, lastCount = 0;
+let settled = false;
 
-// ---------- 選單 ----------
-for (const c of COLORS) {
-  const d = document.createElement('div');
-  d.className = 'cl' + (c === playerColor ? ' sel' : '');
-  d.style.background = '#' + c.toString(16).padStart(6, '0');
-  d.onclick = () => { playerColor = c; document.querySelectorAll('.cl').forEach(x => x.classList.remove('sel')); d.classList.add('sel'); };
-  $('colors').appendChild(d);
+// ---------- 下注 ----------
+for (const c of CHIPS) {
+  const b = document.createElement('button');
+  b.className = 'chip' + (c === chip ? ' sel' : '');
+  b.textContent = c;
+  b.onclick = () => { chip = c; document.querySelectorAll('.chip').forEach(x => x.classList.toggle('sel', x === b)); };
+  $('chips').appendChild(b);
 }
-if (view.mobile) $('count').value = '30';
-$('startBtn').onclick = () => { sfx.unlock(); newRace(); };
-$('againBtn').onclick = () => newRace();
-$('watchBtn').onclick = () => $('result').classList.add('hidden');
+$('count').onchange = () => setupRace();
+$('clearBtn').onclick = () => { bets = []; refreshBets(); };
+$('goBtn').onclick = () => { sfx.unlock(); startRace(); };
+$('nextBtn').onclick = () => openBetting();
+$('btnNext').onclick = () => openBetting();
+$('watchBtn').onclick = () => { $('result').classList.add('hidden'); $('btnNext').classList.remove('hidden'); };
 
-function newRace() {
+const staked = () => bets.reduce((n, b) => n + b.amount, 0);
+
+function openBetting() {
+  if (coins < CHIPS[0]) {
+    coins = START_COINS;
+    saveWallet();
+    $('bankrupt').classList.remove('hidden');
+  } else $('bankrupt').classList.add('hidden');
+  raceNo++;
+  saveWallet();
+  setupRace();
+}
+
+function setupRace() {
   if (race) race.world.free();
-  race = new Race(track, { count: Number($('count').value), seed: (Math.random() * 1e9) | 0, playerColor, difficulty: Number($('diff').value) });
+  race = new Race(track, { count: Number($('count').value), seed: (Math.random() * 1e9) | 0, player: false });
+  priceRace(race);
   view.setRace(race);
-  over = false; cardState = null; timeScale = 1; acc = 0;
-  $('menu').classList.add('hidden');
+  view.setMarked([]);
+  view.focusId = -1;
+  view.camMode = 1;
+  phase = 'betting'; bets = []; settled = false; acc = 0; lastCount = 4;
+  $('tags').innerHTML = '';
+  $('hud').classList.add('hidden');
   $('result').classList.add('hidden');
-  $('cards').classList.add('hidden');
-  $('hud').classList.remove('hidden');
-  if (view.mobile) $('touch').classList.remove('hidden');
-  buildProgress();
-  lastCount = 4;
+  $('btnNext').classList.add('hidden');
+  $('bet').classList.remove('hidden');
+  $('raceNo').textContent = `第 ${raceNo} 場`;
+  buildField();
+  refreshBets();
 }
 
-// ---------- 鍵盤 ----------
-const keys = {};
+function buildField() {
+  const field = $('field');
+  field.innerHTML = '';
+  const list = race.marbles.slice().sort((a, b) => b.winP - a.winP);
+  for (const m of list) {
+    const row = document.createElement('div');
+    row.className = 'horse';
+    row.innerHTML = `
+      <span class="no">${m.id + 1}</span>
+      <span class="ball" style="--c:${hex(m.color)}"></span>
+      <div class="info"><div class="nm">${m.name}</div><div class="st">${'★'.repeat(m.stars)}${'☆'.repeat(5 - m.stars)} · 第 ${m.row + 1} 排</div></div>`;
+    for (const type of ['win', 'top3']) {
+      const b = document.createElement('button');
+      b.className = 'ob';
+      b.dataset.id = m.id; b.dataset.type = type;
+      b.innerHTML = `${TYPE_NAME[type]}<b>×${m.odds[type].toFixed(1)}</b><i></i>`;
+      b.onclick = () => addBet(m, type);
+      row.appendChild(b);
+    }
+    field.appendChild(row);
+  }
+}
+
+function addBet(m, type) {
+  sfx.unlock();
+  if (staked() + chip > coins) { flash($('coins').parentElement); return; }
+  const b = bets.find(x => x.id === m.id && x.type === type);
+  if (b) b.amount += chip;
+  else bets.push({ id: m.id, type, amount: chip, odds: m.odds[type] });
+  sfx.beep(660, 0.06);
+  refreshBets();
+}
+
+function refreshBets() {
+  $('coins').textContent = coins - staked();
+  $('staked').textContent = staked();
+  $('goBtn').textContent = bets.length ? '開賽！' : '不下注，直接看';
+  for (const el of document.querySelectorAll('.ob')) {
+    const b = bets.find(x => x.id === Number(el.dataset.id) && x.type === el.dataset.type);
+    el.classList.toggle('on', !!b);
+    el.querySelector('i').textContent = b ? b.amount : '';
+  }
+}
+
+function flash(el) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+
+function startRace() {
+  coins -= staked();
+  saveWallet();
+  phase = 'racing';
+  const ids = [...new Set(bets.map(b => b.id))];
+  view.setMarked(ids);
+  view.focusId = ids.length ? ids[0] : -1;
+  view.camMode = 0;
+  $('bet').classList.add('hidden');
+  $('hud').classList.remove('hidden');
+  buildTags(ids);
+  buildProgress(ids);
+  updateFocusBtn();
+}
+
+// ---------- 比賽中的操作 ----------
+function cycleFocus() {
+  const ids = [...new Set(bets.map(b => b.id)), -1];
+  view.focusId = ids[(ids.indexOf(view.focusId) + 1) % ids.length];
+  updateFocusBtn();
+}
+function updateFocusBtn() {
+  $('btnFocus').textContent = '👁 ' + (view.focusId < 0 ? '領先者' : race.marbles[view.focusId].name);
+}
+function cycleSpeed() {
+  speedK = (speedK + 1) % SPEEDS.length;
+  $('btnSpeed').textContent = `⏩ ${SPEEDS[speedK]}x`;
+}
+$('btnFocus').onclick = cycleFocus;
+$('btnCam').onclick = () => { view.camMode = (view.camMode + 1) % 3; };
+$('btnSpeed').onclick = cycleSpeed;
 addEventListener('keydown', e => {
-  keys[e.code] = true;
-  if (!race) return;
-  if (e.repeat) return;
-  const inp = race.player.input;
-  if (e.code === 'Space') { inp.jump = true; e.preventDefault(); }
-  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'KeyE') inp.dash = true;
+  if (!race || phase === 'betting' || e.repeat) return;
   if (e.code === 'KeyC') view.camMode = (view.camMode + 1) % 3;
-  if (e.code === 'KeyR') manualRespawn();
-  if (cardState && ['Digit1', 'Digit2', 'Digit3'].includes(e.code)) pickCard(Number(e.code.at(-1)) - 1);
+  if (e.code === 'KeyF') cycleFocus();
+  if (e.code === 'Space') { cycleSpeed(); e.preventDefault(); }
 });
-addEventListener('keyup', e => { keys[e.code] = false; });
-addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
 
 // 滑鼠拖曳轉視角
 let dragX = null;
-$('game').addEventListener('pointerdown', e => { if (e.pointerType === 'mouse') { dragX = e.clientX; view.dragging = true; } });
+$('game').addEventListener('pointerdown', e => { dragX = e.clientX; view.dragging = true; });
 addEventListener('pointermove', e => { if (dragX !== null) { view.yawOffset -= (e.clientX - dragX) * 0.006; dragX = e.clientX; } });
 addEventListener('pointerup', () => { dragX = null; view.dragging = false; });
-
-// ---------- 觸控 ----------
-const stick = { id: null, x: 0, y: 0, cx: 0, cy: 0 };
-const zone = $('stickZone'), base = $('stickBase'), knob = $('stickKnob');
-zone.addEventListener('pointerdown', e => {
-  stick.id = e.pointerId; zone.setPointerCapture(e.pointerId);
-  const r = zone.getBoundingClientRect();
-  stick.cx = e.clientX; stick.cy = e.clientY;
-  base.style.left = (e.clientX - r.left - 65) + 'px';
-  base.style.top = (e.clientY - r.top - 65) + 'px'; base.style.bottom = 'auto';
-});
-zone.addEventListener('pointermove', e => {
-  if (e.pointerId !== stick.id) return;
-  let dx = e.clientX - stick.cx, dy = e.clientY - stick.cy;
-  const l = Math.hypot(dx, dy), max = 55;
-  if (l > max) { dx *= max / l; dy *= max / l; }
-  stick.x = dx / max; stick.y = dy / max;
-  knob.style.transform = `translate(${dx}px, ${dy}px)`;
-});
-const endStick = e => { if (e.pointerId !== stick.id) return; stick.id = null; stick.x = stick.y = 0; knob.style.transform = ''; };
-zone.addEventListener('pointerup', endStick); zone.addEventListener('pointercancel', endStick);
-const tap = (id, fn) => $(id).addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); fn(); });
-tap('btnJump', () => race && (race.player.input.jump = true));
-tap('btnDash', () => race && (race.player.input.dash = true));
-tap('btnCam', () => { view.camMode = (view.camMode + 1) % 3; });
-tap('btnRespawn', () => manualRespawn());
-
-function manualRespawn() {
-  if (!race || !race.player.alive || race.player.finished || respawnCd > 0 || race.phase !== 'race') return;
-  respawnCd = 3;
-  race.respawn(race.player);
-}
-
-function playerInput() {
-  const p = race.player;
-  let f = 0, s = 0;
-  if (keys.KeyW || keys.ArrowUp) f += 1;
-  if (keys.KeyS || keys.ArrowDown) f -= 1;
-  if (keys.KeyD || keys.ArrowRight) s += 1;
-  if (keys.KeyA || keys.ArrowLeft) s -= 1;
-  if (stick.id !== null) { f -= stick.y; s += stick.x; }
-  const fwd = view.viewFwd || new THREE.Vector3(1, 0, 0);
-  const rx = -fwd.z, rz = fwd.x; // 右手方向
-  let x = fwd.x * f + rx * s, z = fwd.z * f + rz * s;
-  const l = Math.hypot(x, z);
-  if (l > 1) { x /= l; z /= l; }
-  p.input.x = x; p.input.z = z;
-}
-
-// ---------- 升級卡 ----------
-function openCards() {
-  const cards = race.drawCards(3);
-  cardState = { cards, until: performance.now() + 7000 };
-  timeScale = 0.3;
-  const list = $('cardList');
-  list.innerHTML = '';
-  cards.forEach((c, k) => {
-    const d = document.createElement('div');
-    d.className = 'card';
-    d.innerHTML = `<div class="ic">${c.icon}</div><div class="nm">${c.name}</div><div class="ds">${c.desc}</div><div class="key">按 ${k + 1}</div>`;
-    d.addEventListener('pointerdown', e => { e.stopPropagation(); pickCard(k); });
-    list.appendChild(d);
-  });
-  $('cards').classList.remove('hidden');
-}
-function pickCard(k) {
-  if (!cardState) return;
-  const c = cardState.cards[k];
-  race.applyUpgrade(race.player, c.id);
-  closeCards();
-  showMsg(c.icon, c.name, 1.2);
-  sfx.chime();
-}
-function closeCards() {
-  cardState = null; timeScale = 1;
-  $('cards').classList.add('hidden');
-}
 
 // ---------- 訊息 ----------
 function showMsg(big, small = '', dur = 1.4) {
@@ -156,57 +178,86 @@ function showMsg(big, small = '', dur = 1.4) {
   msgTimer = dur;
 }
 
-function endGame(win) {
-  over = true;
-  closeCards();
-  const p = race.player;
-  setTimeout(() => {
-    $('result').classList.remove('hidden');
-    $('watchBtn').classList.toggle('hidden', p.finished);
-    if (p.finished) {
-      $('resTitle').textContent = p.place === 1 ? '🏆 冠軍！' : `第 ${p.place} 名完賽！`;
-      $('resText').textContent = `${race.count} 顆彈珠中，你撐到最後並在 ${p.finishTime.toFixed(1)} 秒衝過終點。重生 ${p.respawns} 次。`;
-    } else {
-      const k = race.cps.findIndex(c => c.closed && !c.passed.includes(p));
-      $('resTitle').textContent = '💥 被淘汰了';
-      $('resText').textContent = `你在檢查點 ${k + 1} 被淘汰，最終排名第 ${p.rank} 名。再試一次吧！`;
-    }
-  }, win ? 1200 : 1600);
-}
+const isMine = m => bets.some(b => b.id === m.id);
 
 function handleEvents() {
   for (const e of race.events) {
     switch (e.type) {
       case 'go': showMsg('GO!', '', 0.9); sfx.beep(880, 0.35); break;
-      case 'cp':
-        if (e.m.isPlayer) {
-          showMsg('晉級！', `第 ${e.place} 個通過檢查點 ${e.k + 1}`, 1.3);
-          sfx.chime();
-          if (!over) openCards();
-        }
-        break;
       case 'elim': {
-        const me = e.list.includes(race.player);
-        if (!over || !me) showMsg(`淘汰 ${e.list.length} 顆！`, `檢查點 ${e.k + 1} 關閉，剩 ${race.aliveCount()} 顆`, 1.6);
-        sfx.pop();
-        if (me && !over) endGame(false);
+        const mine = e.list.filter(isMine);
+        if (mine.length) { showMsg('💥 出局', `你押的 ${mine.map(m => m.name).join('、')} 被淘汰了`, 1.8); sfx.pop(); }
+        else showMsg(`淘汰 ${e.list.length} 顆！`, `檢查點 ${e.k + 1} 關閉，剩 ${race.aliveCount()} 顆`, 1.6);
         break;
       }
       case 'finish':
-        if (e.m.isPlayer) { showMsg(e.place === 1 ? '🏆 第 1 名！' : `第 ${e.place} 名！`, '', 2); sfx.fanfare(); endGame(true); }
-        else if (e.place === 1 && !race.player.finished) showMsg('', `${e.m.name} 拿下第一名！`, 1.5);
+        if (e.place <= 3) {
+          showMsg(e.place === 1 ? `🏆 ${e.m.name} 奪冠！` : `第 ${e.place} 名 ${e.m.name}`, '', 1.6);
+          if (isMine(e.m)) sfx.chime();
+        }
         break;
-      case 'jump': if (e.m.isPlayer) sfx.boing(); break;
-      case 'dash': if (e.m.isPlayer) sfx.whoosh(); break;
-      case 'respawn': if (e.m.isPlayer) showMsg('', '回到賽道', 0.8); break;
     }
   }
   race.events.length = 0;
 }
 
-// ---------- 進度條 & 排行 ----------
+// 比賽結束：該晉級的都過終點了，或拖太久
+function checkSettle() {
+  if (settled || race.phase !== 'race') return;
+  const keep = race.cps.at(-1).keep;
+  const stuck = race.time > 240 || !race.marbles.some(m => m.alive && !m.finished);
+  if (race.finishOrder.length < keep && !stuck) return;
+  settled = true;
+  phase = 'done';
+
+  let won = 0;
+  const lines = bets.map(b => {
+    const m = race.marbles[b.id];
+    const hit = b.type === 'win' ? m.rank === 1 : m.rank <= 3;
+    const pay = hit ? Math.floor(b.amount * b.odds) : 0;
+    won += pay;
+    return `<div class="${hit ? 'hit' : 'miss'}"><span class="sw" style="background:${hex(m.color)}"></span>${m.name}・${TYPE_NAME[b.type]} ${b.amount} ×${b.odds.toFixed(1)}<b>${hit ? '+' + pay : '✖'}</b></div>`;
+  });
+  coins += won;
+  saveWallet();
+  const net = won - staked();
+
+  setTimeout(() => {
+    $('resTitle').textContent = !bets.length ? '比賽結束' : net > 0 ? `🎉 贏了 ${net}！` : net === 0 ? '打平' : '😢 沒押中';
+    $('podium').innerHTML = race.ranking.slice(0, 3).map(m =>
+      `<li><span class="sw" style="background:${hex(m.color)}"></span>${m.id + 1} 號 ${m.name}<span class="dim">　獨贏 ×${m.odds.win.toFixed(1)}</span></li>`).join('');
+    $('payout').innerHTML = lines.join('') + `<div class="wallet">💰 現在有 <b>${coins}</b></div>`;
+    $('result').classList.remove('hidden');
+    if (net > 0) sfx.fanfare(); else if (bets.length) sfx.pop();
+  }, 1500);
+}
+
+// ---------- 名牌 & 進度條 & 排行 ----------
+const tagEls = [];
+function buildTags(ids) {
+  const box = $('tags');
+  box.innerHTML = ''; tagEls.length = 0;
+  for (const id of ids) {
+    const m = race.marbles[id];
+    const d = document.createElement('div');
+    d.className = 'tag';
+    d.style.borderColor = hex(m.color);
+    d.textContent = m.name;
+    box.appendChild(d);
+    tagEls.push({ m, d });
+  }
+}
+function updateTags() {
+  for (const { m, d } of tagEls) {
+    const p = view.project(view.meshes[m.id].position.clone().setY(view.meshes[m.id].position.y + 2.4));
+    const show = m.alive && p.visible;
+    d.style.display = show ? '' : 'none';
+    if (show) d.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
+  }
+}
+
 const dotEls = [];
-function buildProgress() {
+function buildProgress(ids) {
   const bar = $('progress'), dots = $('dots');
   bar.querySelectorAll('.tick').forEach(t => t.remove());
   dots.innerHTML = ''; dotEls.length = 0;
@@ -215,14 +266,14 @@ function buildProgress() {
   const f = document.createElement('div'); f.className = 'tick finish'; f.style.left = '100%'; bar.appendChild(f);
   for (const m of race.marbles) {
     const d = document.createElement('div');
-    d.className = 'dot' + (m.isPlayer ? ' me' : '');
-    d.style.background = '#' + m.color.toString(16).padStart(6, '0');
+    d.className = 'dot' + (ids.includes(m.id) ? ' me' : '');
+    d.style.background = hex(m.color);
     dots.appendChild(d); dotEls.push(d);
   }
 }
 
 function updateHud() {
-  const p = race.player, L = race.finishS;
+  const L = race.finishS;
   race.marbles.forEach((m, k) => {
     const d = dotEls[k];
     d.style.display = m.alive ? '' : 'none';
@@ -231,34 +282,24 @@ function updateHud() {
   hudTimer -= 1;
   if (hudTimer > 0) return;
   hudTimer = 6;
-  $('rank').textContent = `第 ${p.rank} 名`;
-  $('alive').textContent = `存活 ${race.aliveCount()} / ${race.count}`;
+
+  // 跟隨的彈珠被淘汰了就改跟領先者
+  if (view.focusId >= 0 && !race.marbles[view.focusId].alive) { view.focusId = -1; updateFocusBtn(); }
+
   const ci = race.currentCp();
-  const info = $('cpInfo');
-  info.classList.remove('danger');
-  if (race.phase === 'countdown') info.textContent = '準備起跑…';
-  else if (ci >= 0) {
-    const cp = race.cps[ci];
-    const left = cp.keep - cp.passed.length;
-    let txt = `檢查點 ${ci + 1}：剩 ${left} 個晉級名額`;
-    if (p.alive && p.cp <= ci) {
-      const behind = race.marbles.filter(m => m.alive && m.cp <= ci).sort((a, b) => b.maxS - a.maxS);
-      const pos = behind.indexOf(p) + 1;
-      if (pos > left) { txt = `⚠ 危險！檢查點 ${ci + 1} 只剩 ${left} 個名額`; info.classList.add('danger'); }
-    }
-    info.textContent = txt;
-  } else info.textContent = '最後衝刺！搶第一名！';
+  if (race.phase === 'countdown') $('cpInfo').textContent = '準備起跑…';
+  else if (ci >= 0) $('cpInfo').textContent = `檢查點 ${ci + 1}：剩 ${race.cps[ci].keep - race.cps[ci].passed.length} 個晉級名額`;
+  else $('cpInfo').textContent = '最後衝刺！';
   race.cps.forEach(cp => cp.tickEl.classList.toggle('done', cp.closed));
 
-  const board = $('board');
-  const top = race.ranking.slice(0, 5);
-  if (!top.includes(p)) top.push(p);
-  board.innerHTML = top.map(m => `<li class="${m.isPlayer ? 'me' : ''}"><span class="n">${m.rank}</span><span class="sw" style="background:#${m.color.toString(16).padStart(6, '0')}"></span>${m.name}${m.finished ? ' 🏁' : !m.alive ? ' ✖' : ''}</li>`).join('');
+  const status = m => m.finished ? `🏁 第 ${m.place} 名` : !m.alive ? '✖ 淘汰' : `第 ${m.rank} 名`;
+  $('myBets').innerHTML = bets.length
+    ? bets.map(b => { const m = race.marbles[b.id]; return `<div class="${!m.alive ? 'out' : ''}"><span class="sw" style="background:${hex(m.color)}"></span><b>${m.name}</b> ${TYPE_NAME[b.type]} ${b.amount}<span class="pos">${status(m)}</span></div>`; }).join('')
+    : '<div class="dim">觀戰中（沒有下注）</div>';
 
-  const st = p.stats;
-  const ab = [`⚡ 衝刺 ×${st.dashes}`];
-  for (const u of p.upgrades) ab.push(`${u.icon} ${u.name}`);
-  $('abilities').innerHTML = ab.map(a => `<div class="ab">${a}</div>`).join('');
+  const top = race.ranking.slice(0, 5);
+  for (const b of bets) { const m = race.marbles[b.id]; if (!top.includes(m)) top.push(m); }
+  $('board').innerHTML = top.map(m => `<li class="${isMine(m) ? 'me' : ''}"><span class="n">${m.rank}</span><span class="sw" style="background:${hex(m.color)}"></span>${m.name}${m.finished ? ' 🏁' : !m.alive ? ' ✖' : ''}</li>`).join('');
 }
 
 // ---------- 主迴圈 ----------
@@ -266,47 +307,34 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.max(0, Math.min(0.05, (now - last) / 1000));
   last = now;
-  if (!race) { renderIdle(dt); return; }
 
-  if (cardState && now > cardState.until) pickCard(Math.floor(Math.random() * 3));
-  if (cardState) $('cardTimer').textContent = Math.ceil((cardState.until - now) / 1000) + 's';
-  respawnCd -= dt;
-
-  // 倒數音效
-  if (race.phase === 'countdown') {
-    const c = Math.ceil(race.countdown);
-    if (c !== lastCount && c <= 3 && c >= 1) { lastCount = c; showMsg(String(c), '', 0.8); sfx.beep(440, 0.15); }
+  if (phase !== 'betting') {
+    if (race.phase === 'countdown') {
+      const c = Math.ceil(race.countdown);
+      if (c !== lastCount && c <= 3 && c >= 1) { lastCount = c; showMsg(String(c), '', 0.8); sfx.beep(440, 0.15); }
+    }
+    acc += dt * SPEEDS[speedK];
+    let n = 0;
+    while (acc >= DT && n < 8) {
+      view.snapshot();
+      race.step();
+      handleEvents();
+      acc -= DT; n++;
+    }
+    if (n === 8) acc = 0;
+    checkSettle();
+  } else {
+    // 下注時鏡頭在起跑線上方慢慢繞
+    view.yawOffset = Math.sin(now / 4000) * 0.6;
   }
-
-  acc += dt * timeScale;
-  let n = 0;
-  while (acc >= DT && n < 5) {
-    view.snapshot();
-    if (race.player.alive && !race.player.finished) playerInput();
-    race.step();
-    handleEvents();
-    acc -= DT; n++;
-  }
-  if (n === 5) acc = 0;
-  view.render(acc / DT, dt);
-  updateHud();
+  view.render(phase === 'betting' ? 0 : acc / DT, dt);
+  if (phase !== 'betting') { updateHud(); updateTags(); }
 
   if (msgTimer > 0) { msgTimer -= dt; if (msgTimer <= 0) { $('msg').classList.remove('show'); $('sub').classList.remove('show'); } }
 }
 
-// 選單背景：鏡頭沿著賽道慢慢飛
-let idleS = 0;
-function renderIdle(dt) {
-  idleS = (idleS + dt * 18) % track.total;
-  const i = Math.floor(idleS / STEP);
-  const p = track.P[i], t = track.T[Math.min(track.N - 1, i + 20)];
-  view.camera.position.set(p.x - t.x * 10 + 6, p.y + 7, p.z - t.z * 10 + 6);
-  view.camera.lookAt(track.P[Math.min(track.N - 1, i + 30)]);
-  view.sun.position.copy(p).add(view.sunOffset); view.sun.target.position.copy(p);
-  view.renderer.render(view.scene, view.camera);
-}
-
+openBetting();
 requestAnimationFrame(frame);
 
 // 方便除錯
-window.game = { get race() { return race; }, view, track, UPGRADES };
+window.game = { get race() { return race; }, view, track, STEP };
