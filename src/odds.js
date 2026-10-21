@@ -1,7 +1,7 @@
 // 賠率：用彈珠實力估勝率，再扣掉莊家抽成
-// 係數是用 test/calib.mjs 跑 400 場 10 顆彈珠、三個障礙區的全 AI 比賽擬合出來的（玩家長期約拿回 87%）
+// 係數是用 test/calib.mjs 跑 400 場 10 顆彈珠、三個障礙區（含金色積木抄近路）的全 AI 比賽擬合出來的（玩家長期約拿回 87%）
 export const EDGE = 0.12;
-const B_SKILL = 8.5;
+const B_SKILL = 4.5;            // 抄近路很看運氣，實力影響比較小
 const FLAT = 0.8;           // 第 2、3 名比第 1 名更看運氣，把勝率拉平一點
 
 const toOdds = p => Math.max(1.1, Math.floor((1 - EDGE) / p * 10) / 10);

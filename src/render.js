@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { STEP, WALL_H, WALL_T, BEAM, EDGE_RISE, colliderProfile, trackPoint, trackQuat, floorHeightAt, mulberry32, ZONE_INFO } from './track.js';
-import { RADIUS, PISTON, PEG_R } from './sim.js';
+import { RADIUS, PISTON, PEG_R, goldLit } from './sim.js';
 
 const TOY = [0xe8483f, 0xf6b929, 0x2f7de1, 0x35b45b, 0xf07c2a, 0x8e5bd6];
 
@@ -471,13 +471,40 @@ export class View {
     // 跳跳積木：每種顏色一組 InstancedMesh，位置每幀從物理同步
     const S = PISTON.size * 2;
     const geo = new THREE.BoxGeometry(S, S, S);
-    this.pistonGroups = TOY.map((col, k) => {
-      const ids = pistons.map((p, n) => p.color === k ? n : -1).filter(n => n >= 0);
-      const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ map: letterTex('ABCDEF'[k], col), roughness: 0.45 }), Math.max(1, ids.length));
+    const group = (ids, mat) => {
+      const mesh = new THREE.InstancedMesh(geo, mat, Math.max(1, ids.length));
       mesh.count = ids.length;
       mesh.castShadow = true; mesh.receiveShadow = true;
       this.scene.add(mesh);
       return { mesh, ids };
+    };
+    this.pistonGroups = TOY.map((col, k) => group(
+      pistons.map((p, n) => p.color === k && !p.gold ? n : -1).filter(n => n >= 0),
+      new THREE.MeshStandardMaterial({ map: letterTex('ABCDEF'[k], col), roughness: 0.45 })));
+    this.ringSmall = new THREE.RingGeometry(0.32, 0.5, 32);
+    this.ringBig = new THREE.RingGeometry(0.72, 0.9, 40);
+    // 金色積木：同一列一起閃，每列一組材質
+    const goldTex = letterTex('★', 0xe0a000);
+    const goldRows = [...new Set(pistons.filter(p => p.gold).map(p => p.row))];
+    this.goldGroups = goldRows.map(row => {
+      const g = group(pistons.map((p, n) => p.gold && p.row === row ? n : -1).filter(n => n >= 0),
+        new THREE.MeshStandardMaterial({ map: goldTex, emissive: 0xff9a00, emissiveIntensity: 0, metalness: 0.5, roughness: 0.3 }));
+      this.pistonGroups.push(g);
+      // 亮的時候積木上方浮著一大一小兩個金色光圈（彈跳墊的樣子）
+      const ringMat = new THREE.MeshBasicMaterial({ color: 0xffae00, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide });
+      const flat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+      const rings = g.ids.map(n => {
+        const pc = pistons[n];
+        const grp = new THREE.Group();
+        const small = new THREE.Mesh(this.ringSmall, ringMat), big = new THREE.Mesh(this.ringBig, ringMat);
+        big.position.y = 0.25;
+        grp.add(small, big);
+        grp.quaternion.copy(trackQuat(t, pc.i));
+        small.quaternion.copy(flat); big.quaternion.copy(flat);
+        this.scene.add(grp);
+        return { grp, small, big, id: n };
+      });
+      return { ...g, row, ringMat, rings };
     });
 
     // 彈珠台釘子：金屬細柱 + 彩色釘帽
@@ -527,7 +554,7 @@ export class View {
   _buildArches() {
     const t = this.track;
     this._arch(t.gateI + 2, bannerTex('起跑 START', null, '#fff7e0', '#e8483f'));
-    const look = { cross: ['小心被十字擋下來', '#e8483f'], piston: ['踩到會彈跳加速', '#35b45b'], pegs: ['彈來彈去看運氣', '#8e5bd6'] };
+    const look = { cross: ['小心被十字擋下來', '#e8483f'], piston: ['金色積木會把你彈去抄近路', '#35b45b'], pegs: ['彈來彈去看運氣', '#8e5bd6'] };
     t.zones.forEach((z, k) => this._arch(z.i0, bannerTex(`${k + 1}. ${ZONE_INFO[z.type].name}`, look[z.type][0], look[z.type][1], '#ffffff')));
     this._arch(t.finishI, bannerTex('終點 FINISH', null, '#ffffff', '#111', true));
   }
@@ -611,6 +638,22 @@ export class View {
         mesh.setMatrixAt(k, m4.compose(_p.copy(b.translation()), _q.copy(b.rotation()), one));
       });
       mesh.instanceMatrix.needsUpdate = true;
+    }
+    // 金色積木閃光：亮的時候（可以抄近路）發出金光
+    for (const g of this.goldGroups) {
+      const lit = goldLit(race.pistons[g.ids[0]], race.time);
+      const flicker = 0.5 + 0.5 * Math.sin(race.time * 18);
+      g.mesh.material.emissiveIntensity = lit ? 0.6 + flicker * 0.5 : 0;
+      // 光圈一上一下彈跳，越高越淡
+      const bounce = Math.abs(Math.sin(race.time * 6));
+      g.ringMat.opacity = 0.95 - bounce * 0.45;
+      for (const r of g.rings) {
+        r.grp.visible = lit;
+        if (!lit) continue;
+        const b = race.pistons[r.id].body, uv = this.track.U[race.pistons[r.id].i];
+        r.grp.position.copy(b.translation()).addScaledVector(uv, PISTON.size + 0.08 + bounce * 0.7);
+        r.big.scale.setScalar(1 + bounce * 0.15);
+      }
     }
     if (race.phase === 'race' && this.gateMesh.visible) {
       this.gateMesh.position.addScaledVector(this.track.U[this.track.gateI], -dt * 8);

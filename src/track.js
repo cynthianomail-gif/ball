@@ -10,6 +10,7 @@ const FLOOR_SEGS = 16;
 
 // 指令：S 直線(長度, 坡度)  T 轉彎(角度, 半徑, 坡度，正=左轉)  J 跳台(缺口長度)
 //       Z 障礙區(種類, 長度, 坡度)：直線上放一整區障礙
+//       R 回程直線(長度, 坡度)：U 字迴轉後的直線，金色積木抄近路的落點
 // 坡度為每單位長度下降量
 const PROGRAM = [
   ['S', 52, 0.015],     // 起跑區
@@ -28,15 +29,15 @@ const PROGRAM = [
   ['S', 8, 0.06],
   ['Z', 'piston', 44, 0.06],  // 障礙區 2：跳跳積木
   ['S', 8, 0.06],
-  ['T', 120, 28, 0.06],
+  ['T', 180, 14, 0.07],       // U 字迴轉
+  ['R', 64, 0.05],            // 回程直線：金色積木抄近路會落在這裡
+  ['T', -90, 28, 0.06],
   ['S', 24, 0.05],      // 跳台前的助跑
   ['J', 8],
   ['S', 24, 0.05],
-  ['T', 250, 25, 0.06],
+  ['T', -120, 25, 0.06],
   ['Z', 'pegs', 46, 0.2],     // 障礙區 3：彈珠台（比較陡）
-  ['T', -80, 32, 0.05],
-  ['S', 26, 0.055],
-  ['T', -160, 26, 0.06],
+  ['T', -60, 30, 0.05],
   ['S', 30, 0.05],
   ['S', 40, 0.0],       // 終點收集區
 ];
@@ -46,6 +47,9 @@ export const ZONE_INFO = {
   piston: { name: '跳跳積木', icon: '🧱' },
   pegs: { name: '彈珠台', icon: '📍' },
 };
+
+const GOLD_ROWS = [3, 7, 11, 15];  // 哪幾列的左邊兩排積木是金色的
+const SHORTCUT_AHEAD = -8;        // 落點在回程直線上、積木正對面再往前多遠（負的＝往回一點）
 
 const START = new THREE.Vector3(-105, 70, 95);
 const START_HEADING = 0; // 朝 +x
@@ -102,8 +106,16 @@ export function buildTrack(seed = 7) {
   push(0);
   const gaps = [];
   const zoneRanges = [];
+  let returnRange = null;
   for (const cmd of PROGRAM) {
-    if (cmd[0] === 'Z') {
+    if (cmd[0] === 'R') {
+      const i0 = xs.length - 1;
+      const n = Math.round(cmd[1] / STEP);
+      for (let i = 0; i < n; i++) {
+        x += Math.cos(h) * STEP; z -= Math.sin(h) * STEP; y -= cmd[2] * STEP; push(0);
+      }
+      returnRange = [i0, xs.length - 1];
+    } else if (cmd[0] === 'Z') {
       const i0 = xs.length - 1;
       const n = Math.round(cmd[2] / STEP);
       for (let i = 0; i < n; i++) {
@@ -199,7 +211,9 @@ export function buildTrack(seed = 7) {
       // 4 排 × 18 列的積木鋪滿整區，像琴鍵一樣交錯升降
       const rows = 18, gap = 2.1, d0 = (len - (rows - 1) * gap) / 2;
       for (let r = 0; r < rows; r++) for (let c = 0; c < 4; c++) {
-        zone.pistons.push({ i: at(d0 + r * gap), lat: (c - 1.5) * 2, row: r, col: c, color: Math.floor(rand() * 6), letter: Math.floor(rand() * 26) });
+        // 靠 U 字內側（左邊）兩排有幾塊金色積木
+        const gold = c <= 1 && GOLD_ROWS.includes(r);
+        zone.pistons.push({ i: at(d0 + r * gap), lat: (c - 1.5) * 2, row: r, col: c, gold, color: Math.floor(rand() * 6), letter: Math.floor(rand() * 26) });
       }
     } else if (z.type === 'pegs') {
       // 交錯排列的釘子
@@ -211,6 +225,21 @@ export function buildTrack(seed = 7) {
     }
     return zone;
   });
+
+  // 6b. 金色積木抄近路：從積木飛到回程直線上、往前一點的地方
+  const shortcuts = [];
+  if (returnRange) {
+    const [r0, r1] = returnRange;
+    for (const z of zones) z.pistons.forEach((pc, k) => {
+      if (!pc.gold) return;
+      const from = P[pc.i].clone().addScaledVector(R[pc.i], pc.lat);
+      let near = r0, bd = Infinity;
+      for (let i = r0; i <= r1; i++) { const d = Math.hypot(P[i].x - from.x, P[i].z - from.z); if (d < bd) { bd = d; near = i; } }
+      const land = Math.min(r1, near + Math.round(SHORTCUT_AHEAD / STEP));
+      pc.land = land;
+      shortcuts.push({ piston: k, land, from: [from.x, from.z], to: [P[land].x, P[land].z] });
+    });
+  }
 
   // 7. 碰撞網格（每段連續地板一個 trimesh）
   const colliders = ranges.map(([a, b]) => {
@@ -238,7 +267,7 @@ export function buildTrack(seed = 7) {
 
   return {
     N, P, T, R, U, half, floor, ranges, gaps, total,
-    gateI, finishI, checkpoints, zones, colliders,
+    gateI, finishI, checkpoints, zones, shortcuts, colliders,
     startI: 0, endI: N - 1,
   };
 }

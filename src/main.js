@@ -205,6 +205,10 @@ function handleEvents() {
     switch (e.type) {
       case 'go': showMsg('GO!', '', 0.9); sfx.beep(880, 0.35); break;
       case 'hop': if (e.m.id === view.focusMarble().id) sfx.boing(); break;
+      case 'shortcut':
+        showMsg('⚡ 抄近路！', `${e.m.name} 被金色積木彈飛了`, 1.8);
+        if (isMine(e.m) || e.m.id === view.focusId) sfx.fanfare(); else sfx.whoosh();
+        break;
       case 'finish':
         if (e.place <= 3) {
           showMsg(e.place === 1 ? `🏆 ${e.m.name} 奪冠！` : `第 ${e.place} 名 ${e.m.name}`, '', 1.6);

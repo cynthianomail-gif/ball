@@ -11,6 +11,10 @@ export const DT = 1 / 60;
 // 升起高度要比彈珠半徑低，彈珠才滾得過去，不會像撞牆
 export const PISTON = { size: 0.95, lift: 0.32, omega: 5, hop: 4, kick: 14, maxSpeed: 34 };
 export const PEG_R = 0.28;
+// 金色積木：亮著的時候被它彈到，就飛過 U 字內側直接落到回程直線
+// period 閃爍週期、litFrac 一個週期裡亮多久、time 飛行秒數、land 落地後的最低速度
+export const GOLD = { period: 1.6, litFrac: 0.6, time: 1.8, land: 18 };
+export function goldLit(pt, t) { return ((t / GOLD.period + pt.row * 0.37) % 1) < GOLD.litFrac; }
 
 export async function initPhysics() { await RAPIER.init(); }
 
@@ -149,7 +153,7 @@ export class Race {
         pattern: n % 6,
         body, collider, alive: true, finished: false, place: 0,
         row: r, idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0,
-        grounded: false, dashCd: 0, hopCd: 0, stillTimer: 0,
+        grounded: false, dashCd: 0, hopCd: 0, stillTimer: 0, flight: null, shortcuts: 0,
         stats: baseStats(), upgrades: [], elimT: 0, rank: n + 1,
         input: { x: 0, z: 0, dash: false },
         ai: (isPlayer && !autopilot) ? null : this._makeAI(),
@@ -212,7 +216,7 @@ export class Race {
     for (const m of this.marbles) {
       if (!m.alive) continue;
       this._sense(m);
-      if (this.phase === 'race' && !m.finished) {
+      if (this.phase === 'race' && !m.finished && !m.flight) {
         if (m.ai) this._think(m, dt);
         this._control(m, dt);
         this._pistonBoost(m);
@@ -292,6 +296,7 @@ export class Race {
     }
     if (!best || Math.abs(best.s - m.s) > PISTON.size || Math.abs(best.lat - m.lat) > PISTON.size) return;
     if (best.vel <= 0 || m.h - RADIUS > best.top + 0.4 || m.hopCd > 0) return;
+    if (best.gold && goldLit(best, this.time)) { this._launch(m, best); return; }
     m.hopCd = 0.15;
     const v = m.body.linvel(), tv = this.track.T[m.idx], uv = this.track.U[m.idx];
     const kick = v.x * tv.x + v.y * tv.y + v.z * tv.z < PISTON.maxSpeed ? PISTON.kick : 0;
@@ -301,6 +306,32 @@ export class Race {
       z: v.z + tv.z * kick + uv.z * PISTON.hop,
     }, true);
     this.events.push({ type: 'hop', m });
+  }
+
+  // 抄近路：算好拋物線，GOLD.time 秒後剛好落在回程直線上
+  _launch(m, pt) {
+    const T = GOLD.time, from = m.body.translation();
+    const to = trackPoint(this.track, pt.land, 0, RADIUS + 0.1, _v);
+    m.body.setLinearDamping(0);              // 沒有空氣阻力，拋物線才準
+    m.body.setLinvel({
+      x: (to.x - from.x) / T,
+      y: (to.y - from.y) / T + 0.5 * GRAVITY * T,
+      z: (to.z - from.z) / T,
+    }, true);
+    m.flight = { landT: this.time + T, land: pt.land };
+    m.shortcuts++;
+    this.events.push({ type: 'shortcut', m });
+  }
+
+  // 落地：接回賽道位置，順著賽道方向繼續滾
+  _land(m) {
+    const t = this.track, i = m.flight.land;
+    m.flight = null;
+    m.idx = i; m.safeIdx = i; m.offTimer = 0;
+    m.body.setLinearDamping(0.12);
+    const v = m.body.linvel(), tv = t.T[i];
+    const sp = Math.max(GOLD.land, Math.hypot(v.x, v.z) * 0.7);
+    m.body.setLinvel({ x: tv.x * sp, y: tv.y * sp, z: tv.z * sp }, true);
   }
 
   _think(m, dt) {
@@ -334,6 +365,10 @@ export class Race {
 
   _trackPos(m, dt) {
     const t = this.track;
+    if (m.flight) {
+      if (this.time < m.flight.landT) return;   // 飛行中不判定出界
+      this._land(m);
+    }
     const p = m.body.translation();
     let best = m.idx, bd = Infinity;
     const lo = Math.max(0, m.idx - 20), hi = Math.min(t.N - 1, m.idx + 40);

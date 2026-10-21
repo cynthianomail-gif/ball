@@ -18,6 +18,7 @@ while (steps < 60 * 240) {
   for (const e of race.events) {
     if (e.type === 'elim') console.log(`t=${race.time.toFixed(1)} cp${e.k + 1} closed, eliminated ${e.list.length}, alive ${race.aliveCount()}`);
     if (e.type === 'finish' && e.place <= 3) console.log(`t=${race.time.toFixed(1)} finish #${e.place} ${e.m.name} respawns=${e.m.respawns}`);
+    if (e.type === 'shortcut') console.log(`t=${race.time.toFixed(1)} ⚡ ${e.m.name} 抄近路 從 s=${e.m.s.toFixed(0)} 飛到 s=${(e.m.flight.land * STEP).toFixed(0)}`);
     if (e.type === 'respawn') { const b = Math.round(e.m.safeIdx * STEP / 10) * 10; respawnAt[b] = (respawnAt[b] || 0) + 1; }
   }
   race.events.length = 0;
