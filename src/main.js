@@ -9,7 +9,8 @@ const hex = c => '#' + c.toString(16).padStart(6, '0');
 const CHIPS = [10, 50, 100, 500];
 const START_COINS = 1000;
 const SPEEDS = [1, 2, 3, 5];
-const MAX_STEPS = 15;         // 一幀最多跑幾步物理（5 倍速在 30fps 的手機上要 10 步）
+const BASE_SPEED = 2;         // 「1x」實際是物理時間的 2 倍，比賽節奏才夠快
+const MAX_STEPS = 24;         // 一幀最多跑幾步物理（5x＝10 倍物理時間，在 30fps 的手機上要 20 步）
 const FIELD = 10;            // 每場 10 顆彈珠
 // 10 種一眼分得出來的顏色：紅 橙 黃 綠 青 藍 紫 粉 棕 黑
 const FIELD_COLORS = [0xe63946, 0xff7b00, 0xffd60a, 0x2ec27e, 0x00b4d8, 0x1d4ed8, 0x8b3fd9, 0xff6fb5, 0x8d5524, 0x2b2b2b];
@@ -366,7 +367,9 @@ function frame(now) {
       const c = Math.ceil(race.countdown);
       if (c !== lastCount && c <= 3 && c >= 1) { lastCount = c; showMsg(String(c), '', 0.8); sfx.beep(440, 0.15); }
     }
-    acc += dt * SPEEDS[speedK];
+    // 倒數照正常速度，開跑後才加速
+    const mult = race.phase === 'countdown' ? 1 : BASE_SPEED * SPEEDS[speedK];
+    acc += dt * mult;
     let n = 0;
     while (acc >= DT && n < MAX_STEPS) {
       view.snapshot();
@@ -380,7 +383,8 @@ function frame(now) {
     // 下注時鏡頭在起跑線上方慢慢繞
     view.yawOffset = Math.sin(now / 4000) * 0.6;
   }
-  view.render(phase === 'betting' ? 0 : acc / DT, dt);
+  // 鏡頭平滑也照比賽時間走，快轉時鏡頭才跟得上
+  view.render(phase === 'betting' ? 0 : acc / DT, phase === 'betting' || race.phase === 'countdown' ? dt : dt * BASE_SPEED * SPEEDS[speedK]);
   if (phase !== 'betting') { updateHud(); updateTags(); }
 
   if (showFps && (fpsTimer -= dt) < 0) {

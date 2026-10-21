@@ -289,7 +289,10 @@ export class View {
     const p0 = t.P[0];
     const deskTop = p0.y - BEAM - 1.5;
     const desk = new THREE.MeshStandardMaterial({ map: woodTex([150, 100, 60], 3, 9), roughness: 0.5 });
-    const dx0 = p0.x - 22, dx1 = p0.x + 62, dz0 = p0.z - 28, dz1 = p0.z + 28;
+    // 桌子只到賽道開始往下掉的地方，不要蓋住後面的漏斗
+    let xEnd = p0.x;
+    for (let i = 0; i < t.N && t.P[i].y - BEAM - 1.5 > deskTop - 0.6; i++) xEnd = Math.max(xEnd, t.P[i].x);
+    const dx0 = p0.x - 22, dx1 = Math.min(p0.x + 62, xEnd + 4), dz0 = p0.z - 28, dz1 = p0.z + 28;
     this._box(dx1 - dx0, 3, dz1 - dz0, desk, (dx0 + dx1) / 2, deskTop - 1.5, p0.z);
     for (const [lx, lz] of [[dx0 + 3, dz0 + 3], [dx1 - 3, dz0 + 3], [dx0 + 3, dz1 - 3], [dx1 - 3, dz1 - 3]])
       this._box(4, deskTop - 3, 4, desk, lx, (deskTop - 3) / 2, lz);
