@@ -2,9 +2,8 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { STEP, WALL_H, WALL_T, BEAM, colliderProfile, trackPoint, trackQuat, floorHeightAt, mulberry32, FUNNEL_HOLE, FORK, forkHalf } from './track.js';
-import { RADIUS, PISTON, PEG_R } from './sim.js';
+import { STEP, WALL_H, WALL_T, BEAM, colliderProfile, trackPoint, trackQuat, floorHeightAt, mulberry32, FUNNEL_HOLE, FORK, forkHalf, WATER_DIV, dividerLat, dividerHalf } from './track.js';
+import { RADIUS, PEG_R } from './sim.js';
 
 const TOY = [0xe8483f, 0xf6b929, 0x2f7de1, 0x35b45b, 0xf07c2a, 0x8e5bd6];
 
@@ -143,7 +142,7 @@ export class View {
     this.camTarget = new THREE.Vector3();
     // 每幀重複使用的暫存物件（少產生垃圾，手機上比較不會突然頓一下）
     this._tp = new THREE.Vector3(); this._tq = new THREE.Quaternion(); this._tm = new THREE.Matrix4();
-    this._one = new THREE.Vector3(1, 1, 1); this._yAxis = new THREE.Vector3(0, 1, 0);
+    this._yAxis = new THREE.Vector3(0, 1, 0);
     this._shakeOff = new THREE.Vector3(); this.shakeAmt = 0;
     this._fwd = new THREE.Vector3(); this._desired = new THREE.Vector3(); this._look = new THREE.Vector3(); this._proj = new THREE.Vector3();
     this._aim = new THREE.Vector3();
@@ -570,9 +569,9 @@ export class View {
       return grp;
     });
 
-    // 跳跳積木：單純的色塊大積木，每種顏色一組 InstancedMesh，位置每幀從物理同步
-    const pc0 = pistons[0] || { hw: 1, hd: 1 };
-    const geo = new RoundedBoxGeometry(pc0.hw * 2, PISTON.thick * 2, pc0.hd * 2, 2, 0.12);
+    // 跳跳積木：單純的色塊大積木（一根從底板頂到 top 的實心柱），每種顏色一組 InstancedMesh，位置和高度每幀從物理同步
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    this._ps = new THREE.Vector3();
     const group = (ids, mat) => {
       const mesh = new THREE.InstancedMesh(geo, mat, Math.max(1, ids.length));
       mesh.count = ids.length;
@@ -663,8 +662,8 @@ export class View {
       this.scene.add(mesh);
     }
 
-    // 水底隧道：半透明藍色水面蓋住整段賽道（高度 level，寬度跟著賽道走），頭尾各一片水簾；彈珠在水裡冒氣泡
-    const WATER_LEVEL = 2.4;
+    // 水底隧道：兩道隔板（積木色底座＋透明壓克力＋頂邊）把賽道隔成三道，水只在左右兩側水道（半透明藍色水面、頭尾各一片水簾），中間乾道是木頭賽道；彈珠在水裡冒氣泡
+    const WATER_LEVEL = WATER_DIV.h;
     const waterZones = t.zones.filter(z => z.type === 'water');
     if (waterZones.length) {
       const waveTex = canvasTex(128, 128, (g, w, h) => {
@@ -675,28 +674,58 @@ export class View {
       this.waterTex = waveTex;
       const surfMat = new THREE.MeshStandardMaterial({ map: waveTex, transparent: true, opacity: 0.38, roughness: 0.1, metalness: 0.1, depthWrite: false, side: THREE.DoubleSide });
       const curtainMat = new THREE.MeshStandardMaterial({ color: 0x4fb4ff, transparent: true, opacity: 0.25, roughness: 0.1, depthWrite: false, side: THREE.DoubleSide });
+      const woodMat = new THREE.MeshStandardMaterial({ color: 0xf6b929, roughness: 0.45, side: THREE.DoubleSide });
+      const glassMat = new THREE.MeshStandardMaterial({ color: 0xd6efff, transparent: true, opacity: 0.3, roughness: 0.08, depthWrite: false, side: THREE.DoubleSide });
       for (const z of waterZones) {
-        const pos = [], uv = [], idx = [];
-        for (let i = z.i0; i <= z.i1; i++) {
-          const hw = t.half[i], a = trackPoint(t, i, -hw, WATER_LEVEL), b = trackPoint(t, i, hw, WATER_LEVEL);
-          pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
-          uv.push(0, (i - z.i0) * STEP / 6, 1, (i - z.i0) * STEP / 6);
-        }
-        for (let k = 0; k < z.i1 - z.i0; k++) { const A = k * 2; idx.push(A, A + 1, A + 2, A + 1, A + 3, A + 2); }
-        const g = new THREE.BufferGeometry();
-        g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-        g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-        g.setIndex(idx); g.computeVertexNormals();
-        const surf = new THREE.Mesh(g, surfMat);
-        surf.renderOrder = 2;
-        this.scene.add(surf);
-        for (const i of [z.i0, z.i1]) {
-          const hw = t.half[i];
-          const curtain = new THREE.Mesh(new THREE.PlaneGeometry(hw * 2, WATER_LEVEL), curtainMat);
-          curtain.position.copy(trackPoint(t, i, 0, WATER_LEVEL / 2));
-          curtain.quaternion.copy(trackQuat(t, i));
-          curtain.renderOrder = 2;
-          this.scene.add(curtain);
+        for (const dv of z.dividers) {
+          const n = Math.round(dv.len / STEP);
+          const inner = i => { const d = (i - dv.i0) * STEP; return dividerLat(d, dv.len) + dividerHalf(Math.min(dv.len, Math.max(0, d)), dv.len); };
+          // 水面：隔板外側到賽道邊
+          const pos = [], uv = [], idx = [];
+          for (let i = z.i0; i <= z.i1; i++) {
+            const a = trackPoint(t, i, dv.side * inner(i), WATER_LEVEL), b = trackPoint(t, i, dv.side * t.half[i], WATER_LEVEL);
+            pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+            uv.push(0, (i - z.i0) * STEP / 6, 1, (i - z.i0) * STEP / 6);
+          }
+          for (let k = 0; k < z.i1 - z.i0; k++) { const A = k * 2; idx.push(A, A + 1, A + 2, A + 1, A + 3, A + 2); }
+          const g = new THREE.BufferGeometry();
+          g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+          g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+          g.setIndex(idx); g.computeVertexNormals();
+          const surf = new THREE.Mesh(g, surfMat);
+          surf.renderOrder = 2;
+          this.scene.add(surf);
+          for (const i of [z.i0, z.i1]) {
+            const lo = inner(i), hi = t.half[i];
+            const curtain = new THREE.Mesh(new THREE.PlaneGeometry(hi - lo, WATER_LEVEL), curtainMat);
+            curtain.position.copy(trackPoint(t, i, dv.side * (lo + hi) / 2, WATER_LEVEL / 2));
+            curtain.quaternion.copy(trackQuat(t, i));
+            curtain.renderOrder = 2;
+            this.scene.add(curtain);
+          }
+          // 隔板：跟 sim.js 的碰撞凸殼同一組尺寸；頂、左、右各一條帶子，兩端各封一片
+          const at = (k, lat, h) => { const p = trackPoint(t, dv.i0 + k, lat, h); return [p.x, p.y, p.z]; };
+          const c = k => dv.side * dividerLat(k * STEP, dv.len), hwAt = k => dividerHalf(k * STEP, dv.len);
+          const slab = (h0, h1, mat, top = true) => {
+            const pp = [], ii = [];
+            const band = (f0, f1) => {
+              const b0 = pp.length / 3;
+              for (let k = 0; k <= n; k++) pp.push(...f0(k), ...f1(k));
+              for (let k = 0; k < n; k++) { const A = b0 + k * 2; ii.push(A, A + 1, A + 2, A + 1, A + 3, A + 2); }
+            };
+            if (top) band(k => at(k, c(k) - hwAt(k), h1), k => at(k, c(k) + hwAt(k), h1));
+            band(k => at(k, c(k) - hwAt(k), h0), k => at(k, c(k) - hwAt(k), h1));
+            band(k => at(k, c(k) + hwAt(k), h0), k => at(k, c(k) + hwAt(k), h1));
+            const gg = new THREE.BufferGeometry();
+            gg.setAttribute('position', new THREE.Float32BufferAttribute(pp, 3));
+            gg.setIndex(ii); gg.computeVertexNormals();
+            const mesh = new THREE.Mesh(gg, mat);
+            if (mat === woodMat) { mesh.castShadow = true; mesh.receiveShadow = true; } else mesh.renderOrder = 3;
+            this.scene.add(mesh);
+          };
+          slab(-0.3, 0.5, woodMat);
+          slab(0.5, WATER_LEVEL - 0.12, glassMat, false);
+          slab(WATER_LEVEL - 0.12, WATER_LEVEL, woodMat);
         }
       }
       // 氣泡：一小堆共用的小球，從水裡的彈珠身上冒出來往上飄
@@ -836,11 +865,11 @@ export class View {
       this.crossMeshes[k].position.copy(b.translation());
       this.crossMeshes[k].quaternion.copy(b.rotation());
     }
-    const m4 = this._tm, one = this._one;
+    const m4 = this._tm;
     for (const { mesh, ids } of this.pistonGroups) {
       ids.forEach((id, k) => {
-        const b = race.pistons[id].body;
-        mesh.setMatrixAt(k, m4.compose(_p.copy(b.translation()), _q.copy(b.rotation()), one));
+        const pt = race.pistons[id];
+        mesh.setMatrixAt(k, m4.compose(trackPoint(this.track, pt.i, pt.lat, (pt.top + pt.bot) / 2, _p), _q.copy(pt.body.rotation()), this._ps.set(pt.hw * 2, pt.top - pt.bot, pt.hd * 2)));
       });
       mesh.instanceMatrix.needsUpdate = true;
     }

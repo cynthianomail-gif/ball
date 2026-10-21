@@ -1,18 +1,22 @@
 // 物理世界 + 比賽規則 + AI（不含畫面，可在 Node 裡跑無頭模擬）
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { STEP, trackPoint, trackQuat, mulberry32, floorHeightAt, WALL_H, FUNNEL_HOLE, FORK, forkHalf } from './track.js';
+import { STEP, trackPoint, trackQuat, mulberry32, floorHeightAt, WALL_H, BEAM, FUNNEL_HOLE, FORK, forkHalf, WATER_DIV, dividerHalf, dividerLat } from './track.js';
 
 export const RADIUS = 0.5;
 export const GRAVITY = 30;
 export const DT = 1 / 60;
 
-// 跳跳積木：lift 升起高度、omega 升降速度、hop 往上彈、kick 往前推、maxSpeed 超過就不再推
-// 升起高度要比彈珠半徑低，彈珠才滾得過去，不會像撞牆
-export const PISTON = { thick: 0.4, lift: 0.32, omega: 3.6, hop: 4, kick: 14, maxSpeed: 34 };   // thick＝積木厚度的一半（整塊都藏在 1.0 厚的軌道底板裡）
+// 跳跳積木（閘門）：lift 升起高度（比彈珠高很多，升起來就是擋路的牆）、omega 升降角速度（週期 2π/omega ≈ 4.5 秒）
+// 積木是一根從軌道底板一路頂到 top 的實心柱，降下來時整根藏在底板裡
+export const PISTON = { lift: 1.6, omega: 1.4 };
 export const PEG_R = 0.28;
-// 水底隧道：區內彈珠阻尼加大到 damp、浮力把重力減掉 buoy 倍；入口 ease 單位內漸變，離開恢復原阻尼 BASE_DAMP
-export const WATER = { damp: 0.3, buoy: 0.5, ease: 3 };
+// 相鄰積木的相位差：每一列錯開 ROW，同一列四塊差 1/4 圈（任何時刻每一列至少有一塊是低的）
+const PISTON_PHASE_ROW = 0.7;
+const PISTON_PHASE_COL = [0, Math.PI / 2, Math.PI, Math.PI * 1.5];
+// 水底隧道：兩道隔板（track.js 的 WATER_DIV）把水區隔成三道，隔板外側的兩側水道才有水，中間乾道不受影響
+// 在水裡阻尼加大到 damp、浮力把重力減掉 buoy 倍；入口 ease 單位內漸變，離開恢復原阻尼 BASE_DAMP
+export const WATER = { damp: 0.33, buoy: 0.45, ease: 3 };
 const BASE_DAMP = 0.12;
 // 彈珠互撞的彈性（撞了會彈開，玻璃珠的手感）；彈珠自己的彈性只用在互撞
 export const MARBLE_REST = 0.6;
@@ -99,14 +103,16 @@ export class Race {
         world.createCollider(rest(RAPIER.ColliderDesc.cuboid(0.25, 0.25, hl).setTranslation(0, 0.95, 0), 0.55), body);
         this.crosses.push({ ...c, body, base: base.clone(), halfLen: hl });
       }
-      // 跳跳積木：藏在地板下，輪流升起把彈珠往上往前彈
+      // 跳跳積木（閘門）：平時藏在地板下，輪流慢慢升起擋路，再降下來放行
       for (const pc of z.pistons) {
         const body = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setRotation(trackQuat(track, pc.i)));
-        world.createCollider(rest(RAPIER.ColliderDesc.roundCuboid(pc.hw - 0.1, PISTON.thick - 0.1, pc.hd - 0.1, 0.1).setFriction(0.6), 0.35), body);
-        const base = floorHeightAt(Math.max(0, Math.abs(pc.lat) - pc.hw), track.half[pc.i], track.rise[pc.i]) - 0.04;
-        const pt = { ...pc, s: pc.i * STEP, body, base, phase: pc.row * 0.9 + (pc.col % 2) * Math.PI, top: base, vel: 0 };
+        // 柱子的高度固定（升起來底部剛好還在底板裡），降下來時多出來的部分垂在底板下面，沒有彈珠會去那裡
+        const base = floorHeightAt(Math.max(0, Math.abs(pc.lat) - pc.hw), track.half[pc.i], track.rise[pc.i]) - 0.04, bot = -BEAM + 0.05;
+        const hh = (base + PISTON.lift - bot) / 2;
+        world.createCollider(rest(RAPIER.ColliderDesc.cuboid(pc.hw, hh, pc.hd).setFriction(0.6), 0.2), body);
+        const pt = { ...pc, s: pc.i * STEP, body, base, bot, hh, phase: PISTON_PHASE_ROW * pc.row + PISTON_PHASE_COL[pc.col], top: base };
         this._movePiston(pt, 0);
-        body.setTranslation(trackPoint(track, pt.i, pt.lat, pt.top - PISTON.thick), true);
+        body.setTranslation(trackPoint(track, pt.i, pt.lat, pt.top - pt.hh), true);
         this.pistons.push(pt);
       }
       // 分岔匯流的島：靜態的水滴形凸殼（鼻圓、身直、尾收尖），底部埋進地板
@@ -119,6 +125,17 @@ export class Race {
         const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
         world.createCollider(rest(RAPIER.ColliderDesc.convexHull(new Float32Array(pts)).setFriction(0.2), 0.3), body);
       }
+      // 水底隧道的隔板：兩端圓頭的長條凸殼，底部埋進地板
+      for (const dv of z.dividers ?? []) {
+        const pts = [];
+        for (let k = 0; k * STEP <= dv.len; k++) {
+          const hw = dividerHalf(k * STEP, dv.len);
+          const c = dv.side * dividerLat(k * STEP, dv.len);
+          for (const lat of [c - hw, c + hw]) for (const h of [-0.3, WATER_DIV.h]) { const p = trackPoint(track, dv.i0 + k, lat, h); pts.push(p.x, p.y, p.z); }
+        }
+        const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+        world.createCollider(rest(RAPIER.ColliderDesc.convexHull(new Float32Array(pts)).setFriction(0.2), 0.3), body);
+      }
       // 彈珠台：一根根固定的釘子
       for (const pg of z.pegs) {
         const pos = trackPoint(track, pg.i, pg.lat, floorHeightAt(pg.lat, track.half[pg.i]) + 1.1);
@@ -126,7 +143,6 @@ export class Race {
         world.createCollider(rest(RAPIER.ColliderDesc.cylinder(1.3, PEG_R).setFriction(0.2), 0.375), body);
       }
     }
-    this.pistonZone = track.zones.find(z => z.type === 'piston');
     this.waterZone = track.zones.find(z => z.type === 'water');
     // 彈珠台、夾彎、分岔、水底隧道裡沒有 AI，只靠重力（夾彎裡 AI 會一直往彎道牆上撞；水裡 AI 的推力會把實力差放大成速度差）
     this.freeZones = track.zones.filter(z => ['pegs', 'zigzag', 'fork', 'water'].includes(z.type));
@@ -171,7 +187,7 @@ export class Race {
         pattern: n % 6,
         body, collider, alive: true, finished: false, place: 0,
         row: r, idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0,
-        grounded: false, dashCd: 0, hopCd: 0, hitCd: 0, pv: { x: 0, y: 0, z: 0 }, stillTimer: 0, funnel: null,
+        grounded: false, dashCd: 0, hitCd: 0, pv: { x: 0, y: 0, z: 0 }, stillTimer: 0, funnel: null,
         stats: baseStats(), upgrades: [], elimT: 0, rank: n + 1,
         input: { x: 0, z: 0, dash: false },
         ai: (isPlayer && !autopilot) ? null : this._makeAI(),
@@ -228,7 +244,7 @@ export class Race {
     }
     for (const pt of this.pistons) {
       this._movePiston(pt, this.time);
-      pt.body.setNextKinematicTranslation(trackPoint(this.track, pt.i, pt.lat, pt.top - PISTON.thick, _v));
+      pt.body.setNextKinematicTranslation(trackPoint(this.track, pt.i, pt.lat, pt.top - pt.hh, _v));
     }
 
     for (const m of this.marbles) {
@@ -240,7 +256,6 @@ export class Race {
         if (m.ai && !free) this._think(m, dt);
         if (!free) this._control(m, dt);
         else this._unstick(m, dt);
-        this._pistonBoost(m);
       }
       this._water(m);
     }
@@ -287,8 +302,8 @@ export class Race {
     const dx = v.x - pv.x, dy = v.y - pv.y + GRAVITY * DT, dz = v.z - pv.z, dv = Math.hypot(dx, dy, dz);
     pv.x = v.x; pv.y = v.y; pv.z = v.z;
     m.hitCd -= DT;
-    // 積木彈、衝刺是程式直接改速度，不算撞擊
-    if (dv < 2.5 || m.hitCd > 0 || m.hopCd > 0.1 || m.dashCd > 0.7) return;
+    // 衝刺是程式直接改速度，不算撞擊
+    if (dv < 2.5 || m.hitCd > 0 || m.dashCd > 0.7) return;
     m.hitCd = 0.06;
     // 地板彈性 0.25：速度變化 ≈ 1.25 × 撞下去的速度；落地要撞得夠快才響
     const landing = dy > 0.6 * dv, k = landing ? (dv / 1.25 - 4) / 20 : (dv - 2) / 14;
@@ -302,7 +317,7 @@ export class Race {
     this.ray.origin.x = p.x; this.ray.origin.y = p.y; this.ray.origin.z = p.z;
     const hit = this.world.castRay(this.ray, RADIUS + 0.22, true, undefined, undefined, m.collider);
     m.grounded = !!hit;
-    m.dashCd -= DT; m.hopCd -= DT;
+    m.dashCd -= DT;
   }
 
   _control(m, dt) {
@@ -354,13 +369,17 @@ export class Race {
     m.body.applyImpulse({ x: rv.x * side + tv.x * k, y: 0, z: rv.z * side + tv.z * k }, true);
   }
 
-  // 水底隧道：在水裡阻尼加大、浮力減輕重力（入口漸變）；漏斗裡的略過
+  // 水底隧道：兩側水道裡阻尼加大、浮力減輕重力（入口漸變）；中間乾道不受影響；漏斗裡的略過
+  // m.wet＝泡在水裡（畫面冒氣泡用）
   _water(m) {
     const z = this.waterZone;
     if (!z || m.funnel) return;
-    const k = m.s > z.s0 && m.s < z.s1 ? Math.min(1, (m.s - z.s0) / WATER.ease) : 0;
-    if (!k && !m.wet) return;
-    m.wet = k > 0;
+    const inZone = m.s > z.s0 && m.s < z.s1 ? Math.min(1, (m.s - z.s0) / WATER.ease) : 0;
+    const dv = z.dividers[0], ds = m.s - dv.i0 * STEP;
+    const k = Math.abs(m.lat) > dividerLat(ds, dv.len) ? inZone : 0;
+    if (!k && !m.wetK) return;
+    m.wetK = k;
+    m.wet = k > 0.5;
     m.body.setLinearDamping(BASE_DAMP + (WATER.damp - BASE_DAMP) * k);
     if (k) m.body.applyImpulse({ x: 0, y: m.body.mass() * GRAVITY * WATER.buoy * k * DT, z: 0 }, true);
   }
@@ -369,29 +388,6 @@ export class Race {
   _movePiston(pt, t) {
     const a = PISTON.omega * t - pt.phase;
     pt.top = pt.base + PISTON.lift * (0.5 - 0.5 * Math.cos(a));
-    pt.vel = PISTON.lift * 0.5 * PISTON.omega * Math.sin(a);
-  }
-
-  // 碰到正在升起的積木：彈起來並往前推一把
-  _pistonBoost(m) {
-    const z = this.pistonZone;
-    if (!z || m.s < z.s0 || m.s > z.s1) return;
-    let best = null, bd = Infinity;
-    for (const pt of this.pistons) {
-      const d = Math.abs(pt.s - m.s) + Math.abs(pt.lat - m.lat);
-      if (d < bd) { bd = d; best = pt; }
-    }
-    if (!best || Math.abs(best.s - m.s) > best.hd || Math.abs(best.lat - m.lat) > best.hw) return;
-    if (best.vel <= 0 || m.h - RADIUS > best.top + 0.4 || m.hopCd > 0) return;
-    m.hopCd = 0.15;
-    const v = m.body.linvel(), tv = this.track.T[m.idx], uv = this.track.U[m.idx];
-    const kick = v.x * tv.x + v.y * tv.y + v.z * tv.z < PISTON.maxSpeed ? PISTON.kick : 0;
-    m.body.setLinvel({
-      x: v.x + tv.x * kick + uv.x * PISTON.hop,
-      y: v.y + tv.y * kick + uv.y * PISTON.hop,
-      z: v.z + tv.z * kick + uv.z * PISTON.hop,
-    }, true);
-    this.events.push({ type: 'hop', m });
   }
 
   _think(m, dt) {

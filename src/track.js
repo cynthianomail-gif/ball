@@ -22,7 +22,7 @@ const PROGRAM = [
   ['S', 14, 0.1],       // 衝下坡、慢慢變窄
   ['F', 14, 5, 5],            // 障礙區 1：漏斗，把擠成一團的彈珠拉成一條線
   ['S', 20, 0.05],      // 離開漏斗底下，夾彎才不會被漏斗擋住
-  ['H', 10, 7, 1.6, 0.2],     // 障礙區 2：十連發夾彎（比較陡，才滾得夠快）
+  ['H', 6, 7, 1.6, 0.2],      // 障礙區 2：六連發夾彎（比較陡，才滾得夠快）
   ['S', 8, 0.06],
   ['F', 3.6, 2.4, 2.4, MINI], // 障礙區 3：連續小漏斗（三個一組）
   ['S', 11, 0.12],            // 漏斗之間的小滑槽：拉開距離，從上面看下一個漏斗才不會被上一個擋住
@@ -33,9 +33,9 @@ const PROGRAM = [
   ['T', 90, 16, 0.07],
   ['Z', 'cross', 50, 0.08],   // 障礙區 5：旋轉十字
   ['T', -180, 16, 0.08],      // 急彎直接接下一關
-  ['Z', 'piston', 44, 0.06],  // 障礙區 6：跳跳積木
+  ['Z', 'piston', 44, 0.06],  // 障礙區 6：跳跳積木（慢慢升降的高閘門）
   ['Z', 'pegs', 46, 0.2],     // 障礙區 7：彈珠台（比較陡），跳跳積木出來直接接上
-  ['Z', 'water', 24, 0.12],   // 障礙區 8：水底隧道（水箱罩住賽道，彈珠變慢，拉近終點前的差距）
+  ['Z', 'water', 24, 0.16],   // 障礙區 8：水底隧道（中間一條乾道，兩側是水：走乾道快、泡水慢，拉近終點前的差距）
   ['S', 40, 0.0],       // 終點（最後 30 是收集區）
 ];
 
@@ -55,6 +55,21 @@ export function forkHalf(s) {
   if (s <= F.nose + F.body) return F.hw;
   return THREE.MathUtils.lerp(F.hw, F.tip, Math.min(1, (s - F.nose - F.body) / F.tail));
 }
+// 水底隧道的隔板：左右各一道沿賽道的固定長條，把水區隔成左水道、中間乾道、右水道，進了哪一道就得走完
+// 隔板中心離中線的距離從入口 lat0 慢慢拉開到出口 lat1（入口乾道口窄一點，彈珠才不會幾乎全進乾道）
+// hw 隔板半寬、tip 圓頭最前端的半寬（不做成刀鋒）、nose 圓頭長度、h 隔板高度（跟水面同高，彈珠翻不過去）、start 離水區入口多遠
+// 乾道淨寬入口 2 * (lat0 - hw) = 2.3（兩顆並排過得去）、出口 2 * (lat1 - hw) = 3.5；兩側水道淨寬 5.5 - lat - hw 最窄 3.25（≥ 3 顆並排）
+export const WATER_DIV = { lat0: 1.4, lat1: 2.0, hw: 0.25, tip: 0.15, nose: 1.0, h: 2.4, start: 1 };
+// 隔板中心在離前端 s 處（長 len）離中線多遠
+export function dividerLat(s, len) {
+  return THREE.MathUtils.lerp(WATER_DIV.lat0, WATER_DIV.lat1, Math.min(1, Math.max(0, s / len)));
+}
+// 隔板在離前端 s 處的半寬（長 len）：兩端都是橢圓圓頭
+export function dividerHalf(s, len) {
+  const d = Math.min(s, len - s), D = WATER_DIV;
+  if (d >= D.nose) return D.hw;
+  return D.tip + (D.hw - D.tip) * Math.sqrt(1 - (1 - d / D.nose) ** 2);
+}
 export const FUNNEL_LANE = 3.5;        // 進漏斗前賽道縮到這個半寬
 
 // 漏斗剖面：r 從洞口到邊緣，回傳往下的深度（0～1）。一半直線一半雙曲線，越靠中間越陡
@@ -65,10 +80,11 @@ export function funnelDepth(r, R) {
 }
 
 const PEGS_WALL = 6.5;             // 彈珠台的牆高（一般是 WALL_H）
+const PISTON_WALL = 4.5;           // 跳跳積木的牆高：衝上升起的積木會被彈高一點，牆要夠高
 export const PISTON_COLS = 4;      // 跳跳積木一列幾塊
 export const PISTON_ROW = 2.9;     // 跳跳積木每列間隔（積木前後長 2.8）
 
-const START = new THREE.Vector3(-105, 100.1, 95);
+const START = new THREE.Vector3(-105, 91.5, 95);
 const START_HEADING = 0; // 朝 +x
 
 export function mulberry32(seed) {
@@ -224,6 +240,14 @@ export function buildTrack(seed = 7) {
       if (i >= z.i0) wallH[i] = Math.min(wallH[i], THREE.MathUtils.lerp(WALL_H, THREE.MathUtils.lerp(ZIGZAG_WALL, WALL_H, k), kin));
     }
   }
+  // 跳跳積木：整段牆加高（前後各 4 單位漸漸升降）
+  for (const z of zoneRanges) if (z.type === 'piston') {
+    const n = Math.round(4 / STEP);
+    for (let i = z.i0 - n; i <= z.i1 + n; i++) {
+      const k = Math.max((z.i0 - i) / n, (i - z.i1) / n, 0);
+      wallH[i] = Math.max(wallH[i], THREE.MathUtils.lerp(PISTON_WALL, WALL_H, k));
+    }
+  }
   // 彈珠台：跳跳積木彈出來的彈珠又高又快，撞到釘子會飛出去，所以牆加高（入口前 4 單位漸漸升高，出口前 6 單位漸漸降回來）
   for (const z of zoneRanges) if (z.type === 'pegs') {
     const n = Math.round(4 / STEP), m = Math.round(6 / STEP);
@@ -313,7 +337,7 @@ export function buildTrack(seed = 7) {
     if (z.type === 'funnel') return { ...z, s0: z.i0 * STEP, s1: z.i1 * STEP, crosses: [], pistons: [], pegs: [], funnels: funnels.filter(f => f.i0 === z.i0) };
     const len = (z.i1 - z.i0) * STEP;
     const at = d => z.i0 + Math.round(d / STEP);
-    const zone = { ...z, s0: z.i0 * STEP, s1: z.i1 * STEP, crosses: [], pistons: [], pegs: [], islands: [] };
+    const zone = { ...z, s0: z.i0 * STEP, s1: z.i1 * STEP, crosses: [], pistons: [], pegs: [], islands: [], dividers: [] };
     if (z.type === 'fork') {
       // 一座島，鼻尖在 lead 處；sim 和畫面都從 FORK 的尺寸長出同一座島
       zone.islands.push({ i0: at(FORK.lead), len: FORK.nose + FORK.body + FORK.tail });
@@ -327,6 +351,9 @@ export function buildTrack(seed = 7) {
         const i = at(d0 + r * PISTON_ROW), cw = half[i] * 2 / PISTON_COLS;
         zone.pistons.push({ i, lat: (c - (PISTON_COLS - 1) / 2) * cw, hw: cw / 2 - 0.04, hd: PISTON_ROW / 2 - 0.05, row: r, col: c, color: Math.floor(rand() * 6) });
       }
+    } else if (z.type === 'water') {
+      // 左右各一道隔板，從入口附近一路到出口（左右對稱）
+      for (const side of [-1, 1]) zone.dividers.push({ i0: at(WATER_DIV.start), len: len - WATER_DIV.start, side });
     } else if (z.type === 'pegs') {
       // 交錯排列的釘子
       const rows = 9, gap = 3.8, d0 = (len - (rows - 1) * gap) / 2;
