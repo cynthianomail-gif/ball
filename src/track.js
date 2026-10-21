@@ -27,9 +27,9 @@ const PROGRAM = [
   ['H', 10, 7, 1.6, 0.2],     // 障礙區 2：十連發夾彎（比較陡，才滾得夠快）
   ['S', 8, 0.06],
   ['F', 3.6, 2.4, 2.4, MINI], // 障礙區 3：連續小漏斗（三個一組）
-  ['S', 4, 0.18],             // 漏斗之間的小滑槽陡一點，彈珠才不會排隊排太久
+  ['S', 11, 0.12],            // 漏斗之間的小滑槽：拉開距離，從上面看下一個漏斗才不會被上一個擋住
   ['F', 3.6, 2.4, 2.4, MINI],
-  ['S', 4, 0.18],
+  ['S', 11, 0.12],
   ['F', 3.6, 2.4, 2.4, MINI],
   ['S', 6, 0.06],
   ['T', 90, 16, 0.07],
@@ -43,7 +43,7 @@ const PROGRAM = [
   ['Z', 'pegs', 46, 0.2],     // 障礙區 6：彈珠台（比較陡）
   ['T', -45, 16, 0.06],
   ['S', 8, 0.05],
-  ['W', 5, 3.6],              // 障礙區 7：蹺蹺板塔，V 字翅膀左右左右倒下去
+  ['W', 6, 0.5],               // 障礙區 7：V 字槽，左右左右來回滾，慢下來才從底部的洞掉下去
   ['S', 6, 0.04],
   ['S', 40, 0.0],       // 終點（最後 30 是收集區）
 ];
@@ -63,7 +63,7 @@ const ZIGZAG_BANK = 0.5;              // 夾彎彎道的傾斜角（弧度）
 const ZIGZAG_WALL = 1.1;              // 夾彎溝槽的牆高（從溝底算，彈珠直徑 1）
 const ZIGZAG_TALL = 22;               // 夾彎開頭這麼長的一段牆還是高的
 export const TOWER_LANE = 1.0;         // 進蹺蹺板塔前賽道收窄到這個半寬（塔裡的槽寬 1.6）
-export const SEESAW_TIP = 2.4;         // 蹺蹺板翅膀尖端離中間多遠（左右兩層剛好上下對齊）
+export const VEE_HOLE = 0.62;          // V 字槽底部洞口的半寬（洞比彈珠直徑 1 寬一點）
 export const FUNNEL_LANE = 3.5;        // 進漏斗前賽道縮到這個半寬
 
 // 漏斗剖面：r 從洞口到邊緣，回傳往下的深度（0～1）。一半直線一半雙曲線，越靠中間越陡
@@ -78,7 +78,7 @@ export const PISTON_COLS = 4;      // 跳跳積木一列幾塊
 export const PISTON_ROW = 2.9;     // 跳跳積木每列間隔（積木前後長 2.8）
 const SHORTCUT_AHEAD = -8;        // 落點在回程直線上、積木正對面再往前多遠（負的＝往回一點）
 
-const START = new THREE.Vector3(-105, 123, 95);
+const START = new THREE.Vector3(-105, 110, 95);
 const START_HEADING = 0; // 朝 +x
 
 export function mulberry32(seed) {
@@ -160,26 +160,24 @@ export function buildTrack(seed = 7) {
       funnels.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], R: Rf, depth, yRim, yHole: yRim - depth, lane, wallH: wall, taper: opt.taper ?? 14 });
       zoneRanges.push({ type: opt.group || 'funnel', i0, i1 });
     } else if (cmd[0] === 'W') {
-      // 蹺蹺板塔：賽道末端往前掉進一個直立的窄槽，裡面一層層 V 字形的蹺蹺板（像張開的翅膀）
-      // 彈珠掉在一邊翅膀上滾到中間的凹處 → 蹺蹺板往另一邊倒 → 從那邊翅膀尖端掉到下一層，左右左右往下
-      const [, count, gap] = cmd;
+      // V 字槽：賽道末端往前掉進一個固定的 V 字形凹槽（夾在玻璃和後板之間）
+      // 彈珠在裡面左右左右來回滾，底部中間有個洞，滾得夠慢才會掉下去接到出口賽道
+      const [, span, slope] = cmd;
       const i0 = xs.length - 1;
       const f = [Math.cos(h), -Math.sin(h)], r = [Math.sin(h), Math.cos(h)];   // 前進方向、右手邊
-      const d0 = -1;                         // 第一層往左倒，所以彈珠要掉在它右邊的翅膀上
-      const cx = x + f[0] * 1.0 + r[0] * d0 * SEESAW_TIP, cz = z + f[1] * 1.0 + r[1] * d0 * SEESAW_TIP;
-      const yTop = y, yPivot0 = y - 3.2;
-      const rockers = [];
-      for (let k = 0; k < count; k++) rockers.push({ dir: k % 2 ? -d0 : d0, y: yPivot0 - k * gap });
-      const yExit = yPivot0 - count * gap + 0.4;
-      const exitX = rockers[count - 1].dir * SEESAW_TIP;     // 最後一層從這邊掉出去
-      // 塔裡沒有賽道：一條幾乎垂直往下的線當進度參考
+      const entryX = span - 0.8;                // 從右邊翅膀的高處進來
+      const cx = x + f[0] * 1.0 - r[0] * entryX, cz = z + f[1] * 1.0 - r[1] * entryX;
+      const yTop = y, tanA = Math.tan(slope);
+      const yV = yTop - 1.0 - (entryX - VEE_HOLE) * tanA;    // 洞口（V 底）的高度
+      const yExit = yV - 3;
+      // V 字槽裡沒有賽道：一條往下的線當進度參考
       const x0 = x, z0 = z, y0 = y, n = Math.round((y0 - yExit) / STEP);
       for (let i = 1; i <= n; i++) { x = x0 + (cx - x0) * i / n; z = z0 + (cz - z0) * i / n; y = y0 + (yExit + 1 - y0) * i / n; push(0, 2); }
       const i1 = xs.length - 1;
       breaks.add(i1);
-      x = cx + r[0] * exitX - f[0] * 2; z = cz + r[1] * exitX - f[1] * 2; y = yExit;
+      x = cx - f[0] * 2; z = cz - f[1] * 2; y = yExit;
       push(0);
-      towers.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], f, r, rockers, yTop, yExit, gap, exitX, entryX: -d0 * SEESAW_TIP });
+      towers.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], f, r, span, slope, yV, yTop, yExit, entryX });
       zoneRanges.push({ type: 'seesaw', i0, i1 });
     } else if (cmd[0] === 'H') {
       // 一段直、一個 180 度急彎，左彎右彎輪流，整串往左手邊前進

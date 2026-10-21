@@ -62,13 +62,6 @@ export function hit(strength, glass) {
   }
 }
 
-// 蹺蹺板倒下去的「喀噠」
-export const clack = vol => {
-  if (!ctx || !allow()) return;
-  burst(900, 3, 0.07, 0.3 * vol);
-  tone(240, 0.09, { type: 'triangle', vol: 0.18 * vol, slide: -80 });
-};
-
 // 滾動聲：一直開著的低沉雜訊，跟著鏡頭跟隨的彈珠速度變大聲、變亮
 export function roll(speed, contact) {
   if (!ctx) return;

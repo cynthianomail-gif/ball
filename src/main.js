@@ -214,7 +214,6 @@ function handleEvents() {
         if (e.strength > 9 && e.m.id === view.focusMarble().id) view.shakeAmt = Math.min(0.5, view.shakeAmt + e.strength * 0.02);
         break;
       }
-      case 'clack': sfx.clack(1 / (1 + view.camera.position.distanceToSquared(e.pos) / 300)); break;
       case 'shortcut':
         showMsg('⚡ 抄近路！', `${e.m.name} 被金色積木彈飛了`, 1.8);
         if (isMine(e.m) || e.m.id === view.focusId) sfx.fanfare(); else sfx.whoosh();

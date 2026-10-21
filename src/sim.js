@@ -1,7 +1,7 @@
 // 物理世界 + 比賽規則 + AI（不含畫面，可在 Node 裡跑無頭模擬）
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { STEP, trackPoint, trackQuat, mulberry32, floorHeightAt, WALL_H, FUNNEL_HOLE } from './track.js';
+import { STEP, trackPoint, trackQuat, mulberry32, floorHeightAt, WALL_H, FUNNEL_HOLE, VEE_HOLE } from './track.js';
 
 export const RADIUS = 0.5;
 export const GRAVITY = 30;
@@ -12,12 +12,15 @@ export const DT = 1 / 60;
 export const PISTON = { thick: 0.4, lift: 0.32, omega: 3.6, hop: 4, kick: 14, maxSpeed: 34 };   // thick＝積木厚度的一半（整塊都藏在 1.0 厚的軌道底板裡）
 export const PEG_R = 0.28;
 // 蹺蹺板塔：slot 槽的半寬（前後）、width 塔的半寬（左右）、half 板子半長、offset 板子中心離通道多遠、tilt 傾斜角、speed 翻轉速度
-export const TOWER = { slot: 0.8, width: 3.45 };
-// V 字蹺蹺板：in＝接彈珠那邊的翅膀、out＝倒下去讓彈珠滾出去那邊；角度都是平常（沒倒）時往上翹的斜度
-export const SEESAW = { inA: 0.35, inTip: 3.3, outA: 0.3, outTip: 2.4, tip: 0.5, speed: 3, thick: 0.12 };
-// 玻璃上半部擋住的範圍（塔的 x 座標），賽道進來那一段空著
-export const towerGlassSpan = w => w.entryX > 0 ? [-TOWER.width, w.entryX - 1.3] : [w.entryX + 1.3, TOWER.width];
-export const seesawWing = (A, tipX) => { const L = tipX / Math.cos(A); return { L, A }; };
+export const TOWER = { slot: 0.65, plank: 0.12 };   // slot＝槽寬的一半（彈珠直徑 1）、plank＝V 字板厚度的一半
+// 玻璃上半部擋住的範圍（槽的 x 座標），賽道進來那一段空著
+export const towerGlassSpan = w => [-w.span - 0.2, w.entryX - 1.3];
+// V 字兩片斜板（x 從洞口邊到槽的盡頭），回傳中心、長度、角度
+export const veePlanks = w => [-1, 1].map(side => {
+  const x0 = VEE_HOLE, x1 = w.span, L = (x1 - x0) / Math.cos(w.slope), t = Math.tan(w.slope);
+  const mx = (x0 + x1) / 2;
+  return { side, x: side * mx, y: (mx - x0) * t - TOWER.plank / Math.cos(w.slope), L, a: side * w.slope };
+});
 // 金色積木：亮著的時候被它彈到，就飛過 U 字內側直接落到回程直線
 // period 閃爍週期、litFrac 一個週期裡亮多久、time 飛行秒數、land 落地後的最低速度
 export const GOLD = { period: 1.6, litFrac: 0.6, time: 1.8, land: 18 };
@@ -221,7 +224,6 @@ export class Race {
       _q.copy(c.base).multiply(_q2.setFromAxisAngle(_yAxis, c.angle));
       c.body.setNextKinematicRotation(_q);
     }
-    this._moveRockers(dt);
     for (const pt of this.pistons) {
       this._movePiston(pt, this.time);
       pt.body.setNextKinematicTranslation(trackPoint(this.track, pt.i, pt.lat, pt.top - PISTON.thick, _v));
@@ -494,61 +496,27 @@ export class Race {
   }
 
   _buildTowers() {
-    this.rockers = [];
-    const fixed = (w, q, x, y, z, hx, hy, hz, rest = 0.2) => {
+    const fixed = (w, q, x, y, z, hx, hy, hz, rest = 0.2, rot = 0) => {
       const p = new THREE.Vector3(w.c[0] + w.r[0] * x - w.f[0] * z, y, w.c[1] + w.r[1] * x - w.f[1] * z);
-      const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(p.x, p.y, p.z).setRotation(q));
+      const qq = rot ? q.clone().multiply(_q2.setFromAxisAngle(_zAxis, rot)) : q;
+      const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(p.x, p.y, p.z).setRotation(qq));
       const d = RAPIER.ColliderDesc.cuboid(hx, hy, hz).setFriction(0.3).setRestitution(rest);
       if (!rest) d.setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min);
       this.world.createCollider(d, body);
     };
     for (const w of this.track.towers) {
-      const q = this._towerQuat(w);
-      const yLo = w.yExit + 1.8, yHiBack = w.yTop + 2.5, yHiFront = w.yTop - 1.0;
-      // 前（靠入口，玻璃）、後兩片板子夾出 1.6 寬的槽，左右兩邊再擋起來
-      fixed(w, q, 0, (yLo + yHiFront) / 2, TOWER.slot + 0.05, TOWER.width, (yHiFront - yLo) / 2, 0.05);
-      // 玻璃上半部只在賽道進來的地方留一個窗，彈到後面板子彈回來的彈珠不會飛出去
+      const q = this._towerQuat(w), S = TOWER.slot;
+      const yLo = w.yV - 1.2, yHiBack = w.yTop + 2.5, yHiFront = w.yTop - 1.0;
+      // 前（靠入口，玻璃）、後兩片板子夾出窄槽，左右兩頭再擋起來
+      fixed(w, q, 0, (yLo + yHiFront) / 2, S + 0.05, w.span + 0.2, (yHiFront - yLo) / 2, 0.05);
+      // 玻璃上半部只在賽道進來的地方留一個窗，撞到後面彈回來的彈珠不會飛出去
       const [g0, g1] = towerGlassSpan(w);
-      fixed(w, q, (g0 + g1) / 2, (yHiFront + yHiBack) / 2, TOWER.slot + 0.05, (g1 - g0) / 2, (yHiBack - yHiFront) / 2, 0.05);
+      fixed(w, q, (g0 + g1) / 2, (yHiFront + yHiBack) / 2, S + 0.05, (g1 - g0) / 2, (yHiBack - yHiFront) / 2, 0.05);
       // 後面的板子不反彈：衝進來的彈珠撞到就直直掉下去，不會彈回入口
-      fixed(w, q, 0, (yLo + yHiBack) / 2, -TOWER.slot - 0.05, TOWER.width, (yHiBack - yLo) / 2, 0.05, 0);
-      for (const sx of [-1, 1]) fixed(w, q, sx * (TOWER.width + 0.1), (yLo + yHiBack) / 2, 0, 0.1, (yHiBack - yLo) / 2, TOWER.slot + 0.1);
-      // V 字蹺蹺板：轉軸在中間凹處，接彈珠的翅膀在上一層掉下來的那邊
-      for (const rk of w.rockers) {
-        const pos = new THREE.Vector3(w.c[0], rk.y, w.c[1]);
-        const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(pos.x, pos.y, pos.z).setRotation(q));
-        for (const [side, A, tipX] of [[-rk.dir, SEESAW.inA, SEESAW.inTip], [rk.dir, SEESAW.outA, SEESAW.outTip]]) {
-          const { L } = seesawWing(A, tipX), a = side * A;
-          this.world.createCollider(RAPIER.ColliderDesc.cuboid(L / 2, SEESAW.thick, TOWER.slot - 0.05)
-            .setTranslation(side * Math.cos(A) * L / 2, Math.sin(A) * L / 2 - SEESAW.thick, 0)
-            .setRotation(_q2.setFromAxisAngle(_zAxis, a)).setFriction(0.4).setRestitution(0.1), body);
-        }
-        this.rockers.push({ w, rk, body, pos, base: q.clone(), angle: 0, tipped: false, empty: 0 });
-      }
-    }
-  }
-
-  // 彈珠滾到中間凹處（或已經往出口那邊滾）→ 蹺蹺板往出口那邊倒；上面沒彈珠了才翹回來
-  _moveRockers(dt) {
-    for (const rc of this.rockers) {
-      const { w, rk } = rc;
-      let on = false, go = false;
-      for (const m of this.marbles) {
-        if (m.tower !== w) continue;
-        const p = m.body.translation();
-        const dx = ((p.x - rc.pos.x) * w.r[0] + (p.z - rc.pos.z) * w.r[1]) * rk.dir, dy = p.y - rk.y;
-        if (dx < -SEESAW.inTip - 0.3 || dx > SEESAW.outTip + 0.5 || dy < -1 || dy > 2.2) continue;
-        on = true;
-        if (dx > -0.5 && dy < 1.4) go = true;
-      }
-      if (go && !rc.tipped) { rc.tipped = true; this.events.push({ type: 'clack', pos: rc.pos }); }
-      rc.empty = on ? 0 : rc.empty + dt;
-      if (rc.empty > 0.2) rc.tipped = false;
-      const target = rc.tipped ? -rk.dir * SEESAW.tip : 0;
-      const step = SEESAW.speed * dt;
-      rc.angle += Math.max(-step, Math.min(step, target - rc.angle));
-      _q.copy(rc.base).multiply(_q2.setFromAxisAngle(_zAxis, rc.angle));
-      rc.body.setNextKinematicRotation(_q);
+      fixed(w, q, 0, (yLo + yHiBack) / 2, -S - 0.05, w.span + 0.2, (yHiBack - yLo) / 2, 0.05, 0);
+      for (const sx of [-1, 1]) fixed(w, q, sx * (w.span + 0.1), (yLo + yHiBack) / 2, 0, 0.1, (yHiBack - yLo) / 2, S + 0.1, 0.3);
+      // 固定的 V 字兩片斜板，中間留洞
+      for (const pk of veePlanks(w)) fixed(w, q, pk.x, w.yV + pk.y, 0, pk.L / 2, TOWER.plank, S, 0.15, pk.a);
     }
   }
 
@@ -558,23 +526,21 @@ export class Race {
       if (m.idx < w.i0 - 10 || m.idx > w.i1) continue;
       const dx = (p.x - w.c[0]) * w.r[0] + (p.z - w.c[1]) * w.r[1];
       const dz = (p.x - w.c[0]) * w.f[0] + (p.z - w.c[1]) * w.f[1];
-      const inside = Math.abs(dx) < TOWER.width + 0.5 && Math.abs(dz) < TOWER.slot + 1.2 && p.y < w.yTop + 3;
-      if (inside && p.y > w.yExit + 0.9 && (m.tower || dz > -0.6)) {
+      const inside = Math.abs(dx) < w.span + 0.5 && Math.abs(dz) < TOWER.slot + 1.2 && p.y < w.yTop + 3;
+      if (inside && p.y > w.yV - 0.9 && (m.tower || dz > -0.6)) {
         m.tower = w;
         const frac = Math.min(1, Math.max(0, (w.yTop - p.y) / (w.yTop - w.yExit)));
         m.idx = Math.max(m.idx, w.i0 + Math.round(frac * (w.i1 - w.i0)));
         m.s = m.idx * STEP; m.lat = 0; m.h = 0;
         if (m.s > m.maxS) m.maxS = m.s;
         m.offTimer = 0;
-        // 卡在板子上不動：往中間推一下
+        // 卡著不動：往洞口推一下
         const v = m.body.linvel();
         if (Math.hypot(v.x, v.y, v.z) < 0.3) {
           m.stillTimer += DT;
           if (m.stillTimer > 1) {
             m.stillTimer = 0;
-            // 往腳下那層蹺蹺板的出口那邊推
-            const rc = this.rockers.filter(c => c.w === w && p.y > c.rk.y - 1).sort((a, b) => b.rk.y - a.rk.y)[0];
-            const k = (rc ? rc.rk.dir : -Math.sign(dx || 1)) * 2 * m.body.mass();
+            const k = -Math.sign(dx || 1) * 2 * m.body.mass();
             m.body.applyImpulse({ x: w.r[0] * k, y: 0, z: w.r[1] * k }, true);
           }
         } else m.stillTimer = 0;
@@ -583,7 +549,7 @@ export class Race {
       if (m.tower === w) {
         m.tower = null;
         // 只有從塔底掉出去才接到出口；從上面彈出去（彈回入口、跳太高）就照一般方式找位置
-        if (p.y <= w.yExit + 0.9) m.idx = w.exitI + Math.round(2 / STEP);
+        if (p.y <= w.yV - 0.9) m.idx = w.exitI + Math.round(2 / STEP);
         else m.idx = Math.min(m.idx, w.i0);
         return false;
       }
