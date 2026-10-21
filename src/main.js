@@ -146,10 +146,16 @@ function startRace() {
 }
 
 // ---------- 比賽中的操作 ----------
+// 切換跟隨：先輪你押的彈珠，再來領先者，最後其他彈珠（依目前名次）
 function cycleFocus() {
-  const ids = [...new Set(bets.map(b => b.id)), -1];
-  view.focusId = ids[(ids.indexOf(view.focusId) + 1) % ids.length];
+  const mine = [...new Set(bets.map(b => b.id))];
+  const ids = [...mine, -1, ...race.ranking.map(m => m.id).filter(id => !mine.includes(id))];
+  setFocus(ids[(ids.indexOf(view.focusId) + 1) % ids.length]);
+}
+function setFocus(id) {
+  view.focusId = id;
   updateFocusBtn();
+  hudTimer = 0;
 }
 function updateFocusBtn() {
   $('btnFocus').textContent = '👁 ' + (view.focusId < 0 ? '領先者' : race.marbles[view.focusId].name);
@@ -159,6 +165,13 @@ function cycleSpeed() {
   $('btnSpeed').textContent = `⏩ ${SPEEDS[speedK]}x`;
 }
 $('btnFocus').onclick = cycleFocus;
+// 點排行榜上的名字就跟隨那顆彈珠，再點一次回到領先者
+$('board').addEventListener('pointerdown', e => {
+  const li = e.target.closest('li[data-id]');
+  if (!li) return;
+  const id = Number(li.dataset.id);
+  setFocus(view.focusId === id ? -1 : id);
+});
 function cycleCam() {
   view.camMode = (view.camMode + 1) % CAM_MODES.length;
   $('btnCam').textContent = '📷 ' + CAM_MODES[view.camMode].name;
@@ -234,9 +247,13 @@ function checkSettle() {
 
 // ---------- 名牌 & 進度條 & 排行 ----------
 const tagEls = [];
+let focusTag = null;        // 跟隨中、但沒下注的彈珠也給一個名牌
 function buildTags(ids) {
   const box = $('tags');
   box.innerHTML = ''; tagEls.length = 0;
+  focusTag = { m: null, d: document.createElement('div') };
+  focusTag.d.className = 'tag watch';
+  box.appendChild(focusTag.d);
   for (const id of ids) {
     const m = race.marbles[id];
     const d = document.createElement('div');
@@ -248,11 +265,16 @@ function buildTags(ids) {
   }
 }
 function updateTags() {
-  for (const { m, d } of tagEls) {
+  const fm = view.focusId >= 0 && !isMine(race.marbles[view.focusId]) ? race.marbles[view.focusId] : null;
+  if (focusTag.m !== fm) {
+    focusTag.m = fm;
+    if (fm) { focusTag.d.textContent = '👁 ' + fm.name; focusTag.d.style.borderColor = hex(fm.color); }
+  }
+  for (const { m, d } of [...tagEls, focusTag]) {
+    if (!m) { d.style.display = 'none'; continue; }
     const p = view.project(view.meshes[m.id].position.clone().setY(view.meshes[m.id].position.y + 2.4));
-    const show = p.visible;
-    d.style.display = show ? '' : 'none';
-    if (show) d.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
+    d.style.display = p.visible ? '' : 'none';
+    if (p.visible) d.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
   }
 }
 
@@ -302,11 +324,16 @@ function updateHud() {
   const status = m => m.finished ? `🏁 第 ${m.place} 名` : `第 ${m.rank} 名`;
   setHtml('myBets', bets.length
     ? bets.map(b => { const m = race.marbles[b.id]; return `<div><span class="sw" style="background:${hex(m.color)}"></span><b>${m.name}</b> ${TYPE_NAME[b.type]} ${b.amount}<span class="pos">${status(m)}</span></div>`; }).join('')
-    : '<div class="dim">觀戰中（沒有下注）</div>');
+    : '<div class="dim">觀戰中（沒有下注）<br>點右邊的名字可以跟隨</div>');
 
-  const top = race.ranking.slice(0, 5);
-  for (const b of bets) { const m = race.marbles[b.id]; if (!top.includes(m)) top.push(m); }
-  setHtml('board', top.map(m => `<li class="${isMine(m) ? 'me' : ''}"><span class="n">${m.rank}</span><span class="sw" style="background:${hex(m.color)}"></span>${m.name}${m.finished ? ' 🏁' : ''}</li>`).join(''));
+  // 沒下注時列出全部彈珠，方便點名字切換視角
+  const top = race.ranking.slice(0, bets.length ? 5 : race.count);
+  const extra = [...bets.map(b => b.id), view.focusId].filter(id => id >= 0).map(id => race.marbles[id]);
+  for (const m of extra) if (!top.includes(m)) top.push(m);
+  setHtml('board', top.map(m => {
+    const cls = [isMine(m) && 'me', m.id === view.focusId && 'focus'].filter(Boolean).join(' ');
+    return `<li data-id="${m.id}" class="${cls}"><span class="n">${m.rank}</span><span class="sw" style="background:${hex(m.color)}"></span>${m.name}${m.finished ? ' 🏁' : ''}${m.id === view.focusId ? ' 👁' : ''}</li>`;
+  }).join(''));
 }
 
 // 內容沒變就不要重設 innerHTML，省掉手機上的重新排版

@@ -26,13 +26,16 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #f3e3c8; col
 .dot { position: absolute; z-index: 1; left: 0; top: 3px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; border: 1px solid rgba(0,0,0,.35); }
 .dot.me { top: -3px; width: 18px; height: 18px; margin-left: -9px; border: 3px solid #ffd400; z-index: 2; box-shadow: 0 0 6px #ffd400; }
 #board { position: absolute; right: 14px; top: 14px; margin: 0; padding: 8px 12px; list-style: none; background: rgba(255,255,255,.85); border-radius: 14px; min-width: 150px; font-size: 14px; box-shadow: 0 3px 10px rgba(0,0,0,.15); }
-#board li { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+#board { pointer-events: auto; }
+#board li { display: flex; align-items: center; gap: 6px; padding: 2px 4px; margin: 0 -4px; border-radius: 6px; cursor: pointer; }
+#board li.focus { background: rgba(246,185,41,.35); }
 #board li.me { font-weight: 900; color: #b8860b; }
 #board .n { width: 22px; text-align: right; opacity: .6; }
 #ctrl { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 4px; pointer-events: auto; white-space: nowrap; }
 #ctrl button { margin: 0; padding: 8px 12px; font-size: 15px; max-width: 34vw; overflow: hidden; text-overflow: ellipsis; }
 #btnNext { background: #f6b929; }
 #tags { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+.tag.watch { border-style: dashed; }
 .tag { position: absolute; left: 0; top: 0; background: #fff; border: 3px solid; border-radius: 10px; padding: 1px 8px; font-size: 13px; font-weight: 900; white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,.2); }
 #msg { position: absolute; left: 0; right: 0; top: 30%; text-align: center; font-size: 72px; font-weight: 900; color: #fff;
   -webkit-text-stroke: 3px #2b1d10; paint-order: stroke fill; text-shadow: 0 6px 0 rgba(0,0,0,.2); transition: opacity .3s, transform .3s; opacity: 0; }
@@ -93,7 +96,7 @@ button.big { font-size: 24px; background: #f6b929; padding: 12px 40px; margin-to
   #myBets { left: 10px; top: 10px; font-size: 12px; padding: 6px 8px; max-width: 52vw; }
   #progressWrap { width: calc(100vw - 32px); top: auto; bottom: 64px; } #cpInfo { font-size: 12px; margin-bottom: 4px; }
   #board { font-size: 12px; min-width: 110px; right: 10px; top: 10px; padding: 6px 8px; }
-  #board li:nth-child(n+4):not(.me) { display: none; }
+  #board li { padding: 1px 4px; }
   #msg { font-size: 40px; } #sub { font-size: 16px; top: calc(30% + 56px); }
   #ctrl button { font-size: 13px; padding: 7px 9px; }
   .betHead { font-size: 15px; } .betHead .dim { display: none; } .coins { font-size: 18px; }
