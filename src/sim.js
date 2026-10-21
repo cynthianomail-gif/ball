@@ -224,6 +224,7 @@ export class Race {
         const free = this.freeZones.some(z => m.s > z.s0 - 1 && m.s < z.s1);
         if (m.ai && !free) this._think(m, dt);
         if (!free) this._control(m, dt);
+        else this._unstick(m, dt);
         this._pistonBoost(m);
       }
     }
@@ -281,6 +282,18 @@ export class Race {
         this.events.push({ type: 'dash', m });
       }
     }
+  }
+
+  // 彈珠台裡沒有 AI：停在釘子正後方不動時，往旁邊隨機推一下
+  _unstick(m, dt) {
+    const v = m.body.linvel();
+    if (Math.hypot(v.x, v.y, v.z) > 0.5) { m.stillTimer = 0; return; }
+    m.stillTimer += dt;
+    if (m.stillTimer < 0.8) return;
+    m.stillTimer = 0;
+    const t = this.track, tv = t.T[m.idx], rv = t.R[m.idx], k = m.body.mass();
+    const side = (this.rand() < 0.5 ? -1 : 1) * 3 * k;
+    m.body.applyImpulse({ x: rv.x * side + tv.x * k, y: 0, z: rv.z * side + tv.z * k }, true);
   }
 
   // 積木頂面 = base + 0～lift，用 1-cos 讓升降平滑
@@ -444,8 +457,6 @@ export class Race {
   respawn(m) {
     const t = this.track;
     let i = Math.max(1, m.safeIdx - 8);
-    // 跳台前要留 30 單位助跑，不然會一直跳不過去
-    for (const [a] of t.gaps) if (i > a - 30 / STEP && i <= a) i = Math.max(1, a - Math.round(30 / STEP));
     while (i > 1 && !t.floor[i]) i--;
     const lat = (this.rand() * 2 - 1) * 0.3 * t.half[i];
     const p = trackPoint(t, i, lat, floorHeightAt(lat, t.half[i]) + RADIUS + 1.0);

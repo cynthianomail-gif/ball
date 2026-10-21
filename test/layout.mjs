@@ -1,14 +1,27 @@
-import { buildTrack, STEP } from '../src/track.js';
+// 賽道幾何檢查：長度、高度範圍、有沒有和自己交叉、漏斗下方的賽道有沒有撞到
+// 用法：node test/layout.mjs
+import { buildTrack, STEP, funnelDepth } from '../src/track.js';
 const t = buildTrack();
-let minX=1e9,maxX=-1e9,minZ=1e9,maxZ=-1e9,minY=1e9,maxY=-1e9;
-for (const p of t.P){minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minZ=Math.min(minZ,p.z);maxZ=Math.max(maxZ,p.z);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);}
-console.log('N',t.N,'len',t.total.toFixed(0),'x',minX.toFixed(0),maxX.toFixed(0),'z',minZ.toFixed(0),maxZ.toFixed(0),'y',minY.toFixed(1),maxY.toFixed(1));
-// crossings
-let worst=1e9, where=null;
-for (let i=0;i<t.N;i+=4) for (let j=i+80;j<t.N;j+=4){
-  const a=t.P[i], b=t.P[j];
-  const d=Math.hypot(a.x-b.x,a.z-b.z);
-  if (d < t.half[i]+t.half[j]+3){ const dy=Math.abs(a.y-b.y); if(dy<worst){worst=dy;where=[i*STEP,j*STEP,d.toFixed(1)];}}
+let lo = 1e9, hi = -1e9;
+for (const p of t.P) { lo = Math.min(lo, p.y); hi = Math.max(hi, p.y); }
+console.log(`長度 ${t.total.toFixed(0)}  高度 ${lo.toFixed(1)} ~ ${hi.toFixed(1)}  障礙區 ${t.zones.map(z => `${z.type}@${z.s0.toFixed(0)}`).join(' ')}`);
+// 自我交叉：水平太近、高度差又不夠
+let bad = null;
+for (let i = 0; i < t.N; i += 2) for (let j = i + 80; j < t.N; j += 2) {
+  const a = t.P[i], b = t.P[j];
+  if (Math.hypot(a.x - b.x, a.z - b.z) < t.half[i] + t.half[j] + 2.5 && Math.abs(a.y - b.y) < 7 && (!bad || Math.abs(a.y - b.y) < bad.dy)) bad = { s1: i * STEP, s2: j * STEP, dy: Math.abs(a.y - b.y) };
 }
-console.log('min vertical clearance at crossing', worst.toFixed(1), where);
-console.log('checkpoints', t.checkpoints.map(i=>(i*STEP).toFixed(0)), 'gaps', t.gaps.map(g=>g.map(i=>i*STEP)), 'sweepers', t.sweepers.map(s=>s.i*STEP), 'obst', t.obstacles.length);
+console.log('自我交叉：', bad ? `s=${bad.s1} 和 s=${bad.s2} 只差 ${bad.dy.toFixed(1)}` : '沒有');
+// 漏斗：其他賽道從下面或上面經過時要留夠空間
+for (const f of t.funnels) {
+  let worst = Infinity, at = null;
+  for (let i = 0; i < t.N; i++) {
+    if (i >= f.i0 - 60 && i <= f.i1 + 8) continue;
+    const p = t.P[i], r = Math.hypot(p.x - f.c[0], p.z - f.c[1]);
+    if (r > f.R + t.half[i] + 1) continue;
+    const coneY = f.yRim - f.depth * funnelDepth(Math.max(1.2, Math.min(f.R, r)), f.R);
+    const gap = p.y < coneY ? coneY - p.y - 4.2 : p.y - f.yRim - 4;
+    if (gap < worst) { worst = gap; at = i * STEP; }
+  }
+  console.log(`漏斗 s=${f.i0 * STEP}：附近其他賽道最小間隔 ${worst === Infinity ? '（沒有）' : worst.toFixed(1) + ' at s=' + at}`);
+}

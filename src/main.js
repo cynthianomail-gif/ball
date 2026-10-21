@@ -94,7 +94,7 @@ function buildField() {
     row.innerHTML = `
       <span class="no">${m.id + 1}</span>
       <span class="ball" style="--c:${hex(m.color)}"></span>
-      <div class="info"><div class="nm">${m.name}</div><div class="st">${'★'.repeat(m.stars)}${'☆'.repeat(5 - m.stars)}</div></div>`;
+      <div class="info"><div class="nm">${m.name}</div></div>`;
     for (const type of ['win', 'top3']) {
       const b = document.createElement('button');
       b.className = 'ob';

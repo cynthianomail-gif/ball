@@ -8,41 +8,37 @@ export const WALL_T = 0.7;        // 牆厚
 export const BEAM = 1.0;          // 軌道底下厚度
 const FLOOR_SEGS = 16;
 
-// 指令：S 直線(長度, 坡度)  T 轉彎(角度, 半徑, 坡度，正=左轉)  J 跳台(缺口長度)
+// 指令：S 直線(長度, 坡度)  T 轉彎(角度, 半徑, 坡度，正=左轉)
 //       Z 障礙區(種類, 長度, 坡度)：直線上放一整區障礙
 //       R 回程直線(長度, 坡度)：U 字迴轉後的直線，金色積木抄近路的落點
 //       F 漏斗(半徑, 深度, 洞口下方落差)：從邊緣切進去，繞圈掉進中間的洞，落到下面的賽道
 // 坡度為每單位長度下降量
 const PROGRAM = [
   ['S', 52, 0.015],     // 起跑區
-  ['S', 20, 0.12],
+  ['S', 14, 0.12],
   ['S', 16, 0.08],      // 漏斗前賽道慢慢變窄
   ['F', 14, 5, 5],            // 障礙區 1：漏斗，把擠成一團的彈珠拉成一條線
+  ['S', 6, 0.05],
+  ['T', 90, 24, 0.06],
+  ['S', 10, 0.07],
+  ['T', -100, 24, 0.06],
   ['S', 10, 0.05],
-  ['T', 90, 32, 0.06],
-  ['S', 24, 0.07],
-  ['T', -100, 30, 0.06],
-  ['S', 24, 0.05],      // 跳台前的助跑
-  ['J', 7],
-  ['S', 20, 0.05],
-  ['T', 200, 26, 0.055],
+  ['T', 200, 22, 0.055],
   ['Z', 'cross', 50, 0.08],   // 障礙區 2：旋轉十字
-  ['T', -90, 30, 0.06],
-  ['S', 16, 0.05],
-  ['T', -90, 30, 0.06],
+  ['T', -90, 24, 0.06],
+  ['S', 8, 0.05],
+  ['T', -90, 24, 0.06],
   ['S', 8, 0.06],
   ['Z', 'piston', 44, 0.06],  // 障礙區 3：跳跳積木
   ['S', 8, 0.06],
   ['T', 180, 14, 0.07],       // U 字迴轉
   ['R', 64, 0.05],            // 回程直線：金色積木抄近路會落在這裡
-  ['T', -90, 28, 0.06],
-  ['S', 24, 0.05],      // 跳台前的助跑
-  ['J', 8],
-  ['S', 24, 0.05],
-  ['T', -120, 25, 0.06],
+  ['T', -90, 24, 0.06],
+  ['S', 10, 0.05],
+  ['T', -120, 22, 0.06],
   ['Z', 'pegs', 46, 0.2],     // 障礙區 4：彈珠台（比較陡）
-  ['T', -60, 30, 0.05],
-  ['S', 30, 0.05],      // 最後衝刺
+  ['T', -60, 24, 0.05],
+  ['S', 16, 0.05],      // 最後衝刺
   ['S', 40, 0.0],       // 終點收集區
 ];
 
@@ -65,7 +61,7 @@ export function funnelDepth(r, R) {
 const GOLD_ROWS = [3, 7, 11, 15];  // 哪幾列的左邊兩排積木是金色的
 const SHORTCUT_AHEAD = -8;        // 落點在回程直線上、積木正對面再往前多遠（負的＝往回一點）
 
-const START = new THREE.Vector3(-105, 83, 95);
+const START = new THREE.Vector3(-105, 69, 95);
 const START_HEADING = 0; // 朝 +x
 
 export function mulberry32(seed) {
@@ -114,11 +110,10 @@ export function buildTrack(seed = 7) {
   const rand = mulberry32(seed);
 
   // 1. 烏龜走出 2D 路徑 + 高度
-  const xs = [], zs = [], ys = [], curv = [], gapFlag = [];
+  const xs = [], zs = [], ys = [], curv = [], noFloor = [];
   let x = START.x, z = START.z, y = START.y, h = START_HEADING;
-  const push = (k, gap = 0) => { xs.push(x); zs.push(z); ys.push(y); curv.push(k); gapFlag.push(gap); };
+  const push = (k, hole = 0) => { xs.push(x); zs.push(z); ys.push(y); curv.push(k); noFloor.push(hole); };
   push(0);
-  const gaps = [];
   const zoneRanges = [];
   const funnels = [];
   const breaks = new Set();   // i 和 i+1 之間不相連（漏斗洞口的垂直落差）
@@ -173,13 +168,6 @@ export function buildTrack(seed = 7) {
         h += dh;
         x += Math.cos(h) * STEP; z -= Math.sin(h) * STEP; y -= cmd[3] * STEP; push(k);
       }
-    } else if (cmd[0] === 'J') {
-      // 小跳台：先上揚 5 單位，再接缺口
-      for (let i = 0; i < 10; i++) { x += Math.cos(h) * STEP; z -= Math.sin(h) * STEP; y += 0.16 * STEP; push(0); }
-      const n = Math.round(cmd[1] / STEP);
-      const g0 = xs.length;
-      for (let i = 0; i < n; i++) { x += Math.cos(h) * STEP; z -= Math.sin(h) * STEP; y -= 0.32 * STEP; push(0, 1); }
-      gaps.push([g0, xs.length - 1]);
     }
   }
 
@@ -188,7 +176,6 @@ export function buildTrack(seed = 7) {
   const cuts = [0, ...funnels.flatMap(f => [f.i0 + 1, f.i1 + 1]), N];
   const ySm = [];
   for (let k = 0; k + 1 < cuts.length; k++) ySm.push(...smooth(ys.slice(cuts[k], cuts[k + 1]), 4, 2));
-  for (const [a, b] of gaps) for (let i = a - 2; i <= b + 2; i++) ySm[i] = ys[i];
   for (const f of funnels) for (let i = f.i0 + 1; i <= f.i1; i++) ySm[i] = ys[i];
   const bank = smooth(curv.map(k => THREE.MathUtils.clamp(k * 11, -0.4, 0.4)), 16, 3);
 
@@ -230,7 +217,7 @@ export function buildTrack(seed = 7) {
   for (let i = 1; i < N; i++) segStart[i] = breaks.has(i - 1) ? i : segStart[i - 1];
 
   const floor = new Uint8Array(N).fill(1);
-  for (let i = 0; i < N; i++) if (gapFlag[i]) floor[i] = 0;
+  for (let i = 0; i < N; i++) if (noFloor[i]) floor[i] = 0;   // 漏斗那段沒有賽道
   const ranges = [];
   let rs = -1;
   for (let i = 0; i <= N; i++) {
@@ -239,7 +226,6 @@ export function buildTrack(seed = 7) {
   }
 
   const idxAt = s => Math.max(0, Math.min(N - 1, Math.round(s / STEP)));
-  const inGapNear = (i, margin) => gaps.some(([a, b]) => i > a - margin && i < b + margin);
 
   // 4. 起跑格位 & 閘門
   const gateI = idxAt(30);
@@ -340,7 +326,7 @@ export function buildTrack(seed = 7) {
   });
 
   return {
-    N, P, T, R, U, half, floor, ranges, gaps, total,
+    N, P, T, R, U, half, floor, ranges, total,
     gateI, finishI, checkpoints, zones, shortcuts, funnels, segStart, colliders: [...colliders, ...funnels.flatMap(f => [f.cone, f.wall])],
     startI: 0, endI: N - 1,
   };
