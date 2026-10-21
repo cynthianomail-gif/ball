@@ -1,4 +1,4 @@
-import { buildTrack, STEP } from './track.js';
+import { buildTrack, STEP, ZONE_INFO } from './track.js';
 import { Race, initPhysics, DT } from './sim.js';
 import { View, CAM_MODES } from './render.js';
 import { priceRace } from './odds.js';
@@ -10,7 +10,6 @@ const CHIPS = [10, 50, 100, 500];
 const START_COINS = 1000;
 const SPEEDS = [1, 2, 3];
 const FIELD = 10;            // 每場 10 顆彈珠
-const ELIM_RATE = 0.15;       // 每個檢查點淘汰 15%：10 → 8 → 7 → 5 → 4 顆跑完
 // 10 種一眼分得出來的顏色：紅 橙 黃 綠 青 藍 紫 粉 棕 黑
 const FIELD_COLORS = [0xe63946, 0xff7b00, 0xffd60a, 0x2ec27e, 0x00b4d8, 0x1d4ed8, 0x8b3fd9, 0xff6fb5, 0x8d5524, 0x2b2b2b];
 const TYPE_NAME = { win: '獨贏', top3: '前三' };
@@ -67,7 +66,7 @@ function openBetting() {
 
 function setupRace() {
   if (race) race.world.free();
-  race = new Race(track, { count: FIELD, seed: (Math.random() * 1e9) | 0, player: false, elimRate: ELIM_RATE, palette: FIELD_COLORS });
+  race = new Race(track, { count: FIELD, seed: (Math.random() * 1e9) | 0, player: false, palette: FIELD_COLORS });
   priceRace(race);
   view.setRace(race);
   view.setMarked([]);
@@ -192,12 +191,7 @@ function handleEvents() {
   for (const e of race.events) {
     switch (e.type) {
       case 'go': showMsg('GO!', '', 0.9); sfx.beep(880, 0.35); break;
-      case 'elim': {
-        const mine = e.list.filter(isMine);
-        if (mine.length) { showMsg('💥 出局', `你押的 ${mine.map(m => m.name).join('、')} 被淘汰了`, 1.8); sfx.pop(); }
-        else showMsg(`淘汰 ${e.list.length} 顆！`, `檢查點 ${e.k + 1} 關閉，剩 ${race.aliveCount()} 顆`, 1.6);
-        break;
-      }
+      case 'hop': if (e.m.id === view.focusMarble().id) sfx.boing(); break;
       case 'finish':
         if (e.place <= 3) {
           showMsg(e.place === 1 ? `🏆 ${e.m.name} 奪冠！` : `第 ${e.place} 名 ${e.m.name}`, '', 1.6);
@@ -209,12 +203,10 @@ function handleEvents() {
   race.events.length = 0;
 }
 
-// 比賽結束：該晉級的都過終點了，或拖太久
+// 前三名都過終點就結算（拖太久就照目前名次算）
 function checkSettle() {
   if (settled || race.phase !== 'race') return;
-  const keep = race.cps.at(-1).keep;
-  const stuck = race.time > 240 || !race.marbles.some(m => m.alive && !m.finished);
-  if (race.finishOrder.length < keep && !stuck) return;
+  if (race.finishOrder.length < 3 && race.time < 240) return;
   settled = true;
   phase = 'done';
 
@@ -258,7 +250,7 @@ function buildTags(ids) {
 function updateTags() {
   for (const { m, d } of tagEls) {
     const p = view.project(view.meshes[m.id].position.clone().setY(view.meshes[m.id].position.y + 2.4));
-    const show = m.alive && p.visible;
+    const show = p.visible;
     d.style.display = show ? '' : 'none';
     if (show) d.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
   }
@@ -270,7 +262,13 @@ function buildProgress(ids) {
   bar.querySelectorAll('.tick').forEach(t => t.remove());
   dots.innerHTML = ''; dotEls.length = 0;
   const L = race.finishS;
-  race.cps.forEach(cp => { const t = document.createElement('div'); t.className = 'tick'; t.style.left = (cp.s / L * 100) + '%'; bar.appendChild(t); cp.tickEl = t; });
+  for (const z of track.zones) {
+    const t = document.createElement('div');
+    t.className = 'tick zone ' + z.type;
+    t.style.left = (z.s0 / L * 100) + '%'; t.style.width = ((z.s1 - z.s0) / L * 100) + '%';
+    t.textContent = ZONE_INFO[z.type].icon;
+    bar.appendChild(t);
+  }
   const f = document.createElement('div'); f.className = 'tick finish'; f.style.left = '100%'; bar.appendChild(f);
   for (const m of race.marbles) {
     const d = document.createElement('div');
@@ -284,30 +282,29 @@ function updateHud() {
   const L = race.finishS;
   race.marbles.forEach((m, k) => {
     const d = dotEls[k];
-    d.style.display = m.alive ? '' : 'none';
     d.style.left = Math.min(100, Math.max(0, m.maxS / L * 100)) + '%';
   });
   hudTimer -= 1;
   if (hudTimer > 0) return;
   hudTimer = 6;
 
-  // 跟隨的彈珠被淘汰了就改跟領先者
-  if (view.focusId >= 0 && !race.marbles[view.focusId].alive) { view.focusId = -1; updateFocusBtn(); }
-
-  const ci = race.currentCp();
+  // 鏡頭跟的彈珠在哪一關
+  const fm = view.focusMarble();
+  const zi = track.zones.findIndex(z => fm.maxS < z.s1);
+  const z = track.zones[zi];
   if (race.phase === 'countdown') $('cpInfo').textContent = '準備起跑…';
-  else if (ci >= 0) $('cpInfo').textContent = `檢查點 ${ci + 1}：剩 ${race.cps[ci].keep - race.cps[ci].passed.length} 個晉級名額`;
-  else $('cpInfo').textContent = '最後衝刺！';
-  race.cps.forEach(cp => cp.tickEl.classList.toggle('done', cp.closed));
+  else if (fm.finished) $('cpInfo').textContent = `${fm.name} 已抵達終點`;
+  else if (!z) $('cpInfo').textContent = '最後衝刺！';
+  else $('cpInfo').textContent = `${fm.maxS >= z.s0 ? '正在通過' : '下一關'}：${ZONE_INFO[z.type].icon} ${ZONE_INFO[z.type].name}`;
 
-  const status = m => m.finished ? `🏁 第 ${m.place} 名` : !m.alive ? '✖ 淘汰' : `第 ${m.rank} 名`;
+  const status = m => m.finished ? `🏁 第 ${m.place} 名` : `第 ${m.rank} 名`;
   $('myBets').innerHTML = bets.length
-    ? bets.map(b => { const m = race.marbles[b.id]; return `<div class="${!m.alive ? 'out' : ''}"><span class="sw" style="background:${hex(m.color)}"></span><b>${m.name}</b> ${TYPE_NAME[b.type]} ${b.amount}<span class="pos">${status(m)}</span></div>`; }).join('')
+    ? bets.map(b => { const m = race.marbles[b.id]; return `<div><span class="sw" style="background:${hex(m.color)}"></span><b>${m.name}</b> ${TYPE_NAME[b.type]} ${b.amount}<span class="pos">${status(m)}</span></div>`; }).join('')
     : '<div class="dim">觀戰中（沒有下注）</div>';
 
   const top = race.ranking.slice(0, 5);
   for (const b of bets) { const m = race.marbles[b.id]; if (!top.includes(m)) top.push(m); }
-  $('board').innerHTML = top.map(m => `<li class="${isMine(m) ? 'me' : ''}"><span class="n">${m.rank}</span><span class="sw" style="background:${hex(m.color)}"></span>${m.name}${m.finished ? ' 🏁' : !m.alive ? ' ✖' : ''}</li>`).join('');
+  $('board').innerHTML = top.map(m => `<li class="${isMine(m) ? 'me' : ''}"><span class="n">${m.rank}</span><span class="sw" style="background:${hex(m.color)}"></span>${m.name}${m.finished ? ' 🏁' : ''}</li>`).join('');
 }
 
 // ---------- 主迴圈 ----------

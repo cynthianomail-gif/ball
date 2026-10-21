@@ -9,6 +9,7 @@ export const BEAM = 1.0;          // 軌道底下厚度
 const FLOOR_SEGS = 16;
 
 // 指令：S 直線(長度, 坡度)  T 轉彎(角度, 半徑, 坡度，正=左轉)  J 跳台(缺口長度)
+//       Z 障礙區(種類, 長度, 坡度)：直線上放一整區障礙
 // 坡度為每單位長度下降量
 const PROGRAM = [
   ['S', 52, 0.015],     // 起跑區
@@ -20,17 +21,19 @@ const PROGRAM = [
   ['J', 7],
   ['S', 34, 0.05],
   ['T', 200, 30, 0.055],
-  ['S', 50, 0.06],
+  ['Z', 'cross', 50, 0.08],   // 障礙區 1：旋轉十字
   ['T', -90, 36, 0.06],
   ['S', 30, 0.05],
   ['T', -90, 36, 0.06],
-  ['S', 60, 0.06],
+  ['S', 8, 0.06],
+  ['Z', 'piston', 44, 0.06],  // 障礙區 2：跳跳積木
+  ['S', 8, 0.06],
   ['T', 120, 32, 0.06],
   ['S', 24, 0.05],
   ['J', 8],
   ['S', 40, 0.05],
   ['T', 250, 28, 0.06],
-  ['S', 46, 0.06],
+  ['Z', 'pegs', 46, 0.2],     // 障礙區 3：彈珠台（比較陡）
   ['T', -80, 40, 0.05],
   ['S', 44, 0.055],
   ['T', -160, 30, 0.06],
@@ -38,7 +41,13 @@ const PROGRAM = [
   ['S', 40, 0.0],       // 終點收集區
 ];
 
-const START = new THREE.Vector3(-105, 72, 95);
+export const ZONE_INFO = {
+  cross: { name: '旋轉十字', icon: '✚' },
+  piston: { name: '跳跳積木', icon: '🧱' },
+  pegs: { name: '彈珠台', icon: '📍' },
+};
+
+const START = new THREE.Vector3(-105, 81, 95);
 const START_HEADING = 0; // 朝 +x
 
 export function mulberry32(seed) {
@@ -92,8 +101,16 @@ export function buildTrack(seed = 7) {
   const push = (k, gap = 0) => { xs.push(x); zs.push(z); ys.push(y); curv.push(k); gapFlag.push(gap); };
   push(0);
   const gaps = [];
+  const zoneRanges = [];
   for (const cmd of PROGRAM) {
-    if (cmd[0] === 'S') {
+    if (cmd[0] === 'Z') {
+      const i0 = xs.length - 1;
+      const n = Math.round(cmd[2] / STEP);
+      for (let i = 0; i < n; i++) {
+        x += Math.cos(h) * STEP; z -= Math.sin(h) * STEP; y -= cmd[3] * STEP; push(0);
+      }
+      zoneRanges.push({ type: cmd[1], i0, i1: xs.length - 1 });
+    } else if (cmd[0] === 'S') {
       const n = Math.round(cmd[1] / STEP);
       for (let i = 0; i < n; i++) {
         x += Math.cos(h) * STEP; z -= Math.sin(h) * STEP; y -= cmd[2] * STEP; push(0);
@@ -167,37 +184,33 @@ export function buildTrack(seed = 7) {
   const gateI = idxAt(30);
   const finishI = idxAt(total - 30);
 
-  // 5. 檢查點（20/40/60/80%）
+  // 5. 下注版不設淘汰檢查點
   const checkpoints = [];
-  for (let k = 1; k <= 4; k++) {
-    let i = idxAt(30 + (total - 60) * k / 5);
-    while (inGapNear(i, 30)) i += 4;
-    checkpoints.push(i);
-  }
 
-  // 6. 障礙物：玩具積木 & 旋轉橫桿
-  const obstacles = [];
-  const sweepers = [];
-  const sweeperSpots = [0.33, 0.71];
-  for (const f of sweeperSpots) {
-    let i = idxAt(total * f);
-    while (inGapNear(i, 40) || checkpoints.some(c => Math.abs(c - i) < 40)) i += 6;
-    sweepers.push({ i, speed: (rand() < 0.5 ? -1 : 1) * (1.1 + rand() * 0.5) });
-  }
-  let s = 110;
-  while (s < total - 70) {
-    const i = idxAt(s);
-    const blocked = inGapNear(i, 36) || checkpoints.some(c => Math.abs(c - i) < 24) ||
-      sweepers.some(w => Math.abs(w.i - i) < 30);
-    if (!blocked) {
-      const count = rand() < 0.35 ? 2 : 1;
-      const lats = count === 2 ? [-0.45 - rand() * 0.15, 0.45 + rand() * 0.15] : [(rand() * 2 - 1) * 0.55];
-      for (const lat of lats) {
-        obstacles.push({ i, lat: lat * half[i], size: 1.5 + rand() * 0.5, rot: (rand() - 0.5) * 0.8, color: Math.floor(rand() * 6), letter: Math.floor(rand() * 26) });
+  // 6. 三個障礙區
+  const zones = zoneRanges.map(z => {
+    const len = (z.i1 - z.i0) * STEP;
+    const at = d => z.i0 + Math.round(d / STEP);
+    const zone = { ...z, s0: z.i0 * STEP, s1: z.i1 * STEP, crosses: [], pistons: [], pegs: [] };
+    if (z.type === 'cross') {
+      // 三座十字旋轉門，轉向交錯
+      for (let k = 0; k < 3; k++) zone.crosses.push({ i: at(10 + k * 15), speed: (k % 2 ? -1 : 1) * (1.6 + rand() * 0.3), angle: rand() * Math.PI });
+    } else if (z.type === 'piston') {
+      // 4 排 × 18 列的積木鋪滿整區，像琴鍵一樣交錯升降
+      const rows = 18, gap = 2.1, d0 = (len - (rows - 1) * gap) / 2;
+      for (let r = 0; r < rows; r++) for (let c = 0; c < 4; c++) {
+        zone.pistons.push({ i: at(d0 + r * gap), lat: (c - 1.5) * 2, row: r, col: c, color: Math.floor(rand() * 6), letter: Math.floor(rand() * 26) });
+      }
+    } else if (z.type === 'pegs') {
+      // 交錯排列的釘子
+      const rows = 9, gap = 3.8, d0 = (len - (rows - 1) * gap) / 2;
+      for (let r = 0; r < rows; r++) {
+        const lats = r % 2 ? [-2.6, 0, 2.6] : [-3.9, -1.3, 1.3, 3.9];
+        for (const lat of lats) zone.pegs.push({ i: at(d0 + r * gap), lat: lat + (rand() - 0.5) * 0.3 });
       }
     }
-    s += 26 + rand() * 22;
-  }
+    return zone;
+  });
 
   // 7. 碰撞網格（每段連續地板一個 trimesh）
   const colliders = ranges.map(([a, b]) => {
@@ -225,7 +238,7 @@ export function buildTrack(seed = 7) {
 
   return {
     N, P, T, R, U, half, floor, ranges, gaps, total,
-    gateI, finishI, checkpoints, obstacles, sweepers, colliders,
+    gateI, finishI, checkpoints, zones, colliders,
     startI: 0, endI: N - 1,
   };
 }

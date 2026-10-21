@@ -1,8 +1,8 @@
 // 3D 畫面：臥室、積木賽道、彈珠、鏡頭
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { STEP, WALL_H, WALL_T, BEAM, EDGE_RISE, colliderProfile, trackPoint, trackQuat, floorHeightAt, mulberry32 } from './track.js';
-import { RADIUS } from './sim.js';
+import { STEP, WALL_H, WALL_T, BEAM, EDGE_RISE, colliderProfile, trackPoint, trackQuat, floorHeightAt, mulberry32, ZONE_INFO } from './track.js';
+import { RADIUS, PISTON, PEG_R } from './sim.js';
 
 const TOY = [0xe8483f, 0xf6b929, 0x2f7de1, 0x35b45b, 0xf07c2a, 0x8e5bd6];
 
@@ -423,32 +423,57 @@ export class View {
 
   _buildObstacles() {
     const t = this.track;
-    for (const o of t.obstacles) {
-      const pos = trackPoint(t, o.i, o.lat, floorHeightAt(o.lat, t.half[o.i]) + o.size / 2 - 0.15);
-      const q = trackQuat(t, o.i).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), o.rot));
-      const mat = new THREE.MeshStandardMaterial({ map: letterTex(String.fromCharCode(65 + o.letter), TOY[o.color]), roughness: 0.45 });
-      const m = new THREE.Mesh(new THREE.BoxGeometry(o.size, o.size, o.size), mat);
-      m.position.copy(pos); m.quaternion.copy(q); m.castShadow = true; m.receiveShadow = true;
-      this.scene.add(m);
-    }
-    // 旋轉橫桿外觀
+    const crosses = t.zones.flatMap(z => z.crosses);
+    const pistons = t.zones.flatMap(z => z.pistons);
+    const pegs = t.zones.flatMap(z => z.pegs);
+
+    // 旋轉十字外觀
     const stripe = canvasTex(256, 32, (g, w, h) => {
       for (let x = 0; x < w; x += 32) { g.fillStyle = (x / 32) % 2 ? '#ffffff' : '#e8483f'; g.fillRect(x, 0, 32, h); }
     }, true);
-    this.sweeperMeshes = t.sweepers.map(sw => {
+    this.crossMeshes = crosses.map(c => {
       const grp = new THREE.Group();
-      const hl = t.half[sw.i] - 1.0;
+      const hl = t.half[c.i] - 0.5;
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.6, 3.2, 20), new THREE.MeshStandardMaterial({ color: 0xf6b929, roughness: 0.4 }));
       post.position.y = 1.6;
       const tx = stripe.clone(); tx.repeat.set(hl / 2, 1); tx.needsUpdate = true;
-      const bar = new THREE.Mesh(new THREE.BoxGeometry(hl * 2, 0.5, 0.5), new THREE.MeshStandardMaterial({ map: tx, roughness: 0.4 }));
-      bar.position.y = 0.95;
+      const barMat = new THREE.MeshStandardMaterial({ map: tx, roughness: 0.4 });
+      const bar1 = new THREE.Mesh(new THREE.BoxGeometry(hl * 2, 0.5, 0.5), barMat);
+      const bar2 = bar1.clone(); bar2.rotation.y = Math.PI / 2;
+      bar1.position.y = bar2.position.y = 0.95;
       const cap = new THREE.Mesh(new THREE.SphereGeometry(0.7, 20, 12), new THREE.MeshStandardMaterial({ color: 0xe8483f }));
       cap.position.y = 3.3;
-      for (const m of [post, bar, cap]) { m.castShadow = true; grp.add(m); }
+      for (const m of [post, bar1, bar2, cap]) { m.castShadow = true; grp.add(m); }
       this.scene.add(grp);
       return grp;
     });
+
+    // 跳跳積木：每種顏色一組 InstancedMesh，位置每幀從物理同步
+    const S = PISTON.size * 2;
+    const geo = new THREE.BoxGeometry(S, S, S);
+    this.pistonGroups = TOY.map((col, k) => {
+      const ids = pistons.map((p, n) => p.color === k ? n : -1).filter(n => n >= 0);
+      const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ map: letterTex('ABCDEF'[k], col), roughness: 0.45 }), Math.max(1, ids.length));
+      mesh.count = ids.length;
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      this.scene.add(mesh);
+      return { mesh, ids };
+    });
+
+    // 彈珠台釘子：金屬細柱 + 彩色釘帽
+    const pinMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(PEG_R, PEG_R, 2.6, 12), new THREE.MeshStandardMaterial({ color: 0xdedede, metalness: 0.85, roughness: 0.25 }), pegs.length);
+    const capMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(0.42, 16, 10), new THREE.MeshStandardMaterial({ roughness: 0.3 }), pegs.length);
+    const m4 = new THREE.Matrix4(), one = new THREE.Vector3(1, 1, 1), up = new THREE.Vector3();
+    pegs.forEach((pg, k) => {
+      const q = trackQuat(t, pg.i);
+      const pos = trackPoint(t, pg.i, pg.lat, floorHeightAt(pg.lat, t.half[pg.i]) + 1.1);
+      pinMesh.setMatrixAt(k, m4.compose(pos, q, one));
+      capMesh.setMatrixAt(k, m4.compose(pos.clone().add(up.copy(t.U[pg.i]).multiplyScalar(1.35)), q, one));
+      capMesh.setColorAt(k, new THREE.Color(TOY[k % TOY.length]));
+    });
+    pinMesh.castShadow = capMesh.castShadow = true;
+    this.scene.add(pinMesh, capMesh);
+
     // 起跑閘門
     const gi = t.gateI;
     this.gateMesh = new THREE.Mesh(new THREE.BoxGeometry((t.half[gi] + 1) * 2, WALL_H * 2, 0.6), new THREE.MeshStandardMaterial({ color: 0xe8483f, transparent: true, opacity: 0.85 }));
@@ -482,7 +507,8 @@ export class View {
   _buildArches() {
     const t = this.track;
     this._arch(t.gateI + 2, bannerTex('起跑 START', null, '#fff7e0', '#e8483f'));
-    this.cpArches = t.checkpoints.map((i, k) => this._arch(i, bannerTex(`檢查點 ${k + 1}`, '後段彈珠將被淘汰', '#2f7de1', '#ffffff')));
+    const look = { cross: ['小心被十字擋下來', '#e8483f'], piston: ['踩到會彈跳加速', '#35b45b'], pegs: ['彈來彈去看運氣', '#8e5bd6'] };
+    t.zones.forEach((z, k) => this._arch(z.i0, bannerTex(`${k + 1}. ${ZONE_INFO[z.type].name}`, look[z.type][0], look[z.type][1], '#ffffff')));
     this._arch(t.finishI, bannerTex('終點 FINISH', null, '#ffffff', '#111', true));
   }
 
@@ -553,10 +579,18 @@ export class View {
       }
     });
 
-    for (let k = 0; k < this.sweeperMeshes.length; k++) {
-      const b = race.sweepers[k].body;
-      this.sweeperMeshes[k].position.copy(b.translation());
-      this.sweeperMeshes[k].quaternion.copy(b.rotation());
+    for (let k = 0; k < this.crossMeshes.length; k++) {
+      const b = race.crosses[k].body;
+      this.crossMeshes[k].position.copy(b.translation());
+      this.crossMeshes[k].quaternion.copy(b.rotation());
+    }
+    const m4 = new THREE.Matrix4(), one = new THREE.Vector3(1, 1, 1);
+    for (const { mesh, ids } of this.pistonGroups) {
+      ids.forEach((id, k) => {
+        const b = race.pistons[id].body;
+        mesh.setMatrixAt(k, m4.compose(_p.copy(b.translation()), _q.copy(b.rotation()), one));
+      });
+      mesh.instanceMatrix.needsUpdate = true;
     }
     if (race.phase === 'race' && this.gateMesh.visible) {
       this.gateMesh.position.addScaledVector(this.track.U[this.track.gateI], -dt * 8);

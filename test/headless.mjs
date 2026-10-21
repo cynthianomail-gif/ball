@@ -1,4 +1,4 @@
-// 無頭模擬：全部彈珠由 AI 控制，檢查賽道能不能跑完
+// 無頭模擬：10 顆 AI 彈珠跑一場，檢查賽道和障礙區能不能順利跑完
 // 用法：node test/headless.mjs [seed]
 import { buildTrack, STEP } from '../src/track.js';
 import { Race, initPhysics } from '../src/sim.js';
@@ -6,7 +6,10 @@ import { Race, initPhysics } from '../src/sim.js';
 await initPhysics();
 const track = buildTrack();
 const seed = Number(process.argv[2] || 1);
-const race = new Race(track, { count: 50, seed, autopilot: true, difficulty: Number(process.argv[3] ?? 1) });
+const race = new Race(track, { count: 10, seed, player: false });
+// 每顆彈珠通過每個障礙區花幾秒
+const zoneT = track.zones.map(() => []);
+const enter = new Map();
 const respawnAt = {};
 const t0 = performance.now();
 let steps = 0, lastLog = 0;
@@ -18,15 +21,20 @@ while (steps < 60 * 240) {
     if (e.type === 'respawn') { const b = Math.round(e.m.safeIdx * STEP / 10) * 10; respawnAt[b] = (respawnAt[b] || 0) + 1; }
   }
   race.events.length = 0;
+  for (const m of race.marbles) track.zones.forEach((z, k) => {
+    const key = m.id * 10 + k;
+    if (!enter.has(key) && m.maxS >= z.s0) enter.set(key, race.time);
+    if (enter.has(key) && enter.get(key) >= 0 && m.maxS >= z.s1) { zoneT[k].push(race.time - enter.get(key)); enter.set(key, -1); }
+  });
   if (race.time - lastLog > 15) {
     lastLog = race.time;
     const lead = race.ranking[0], last = race.ranking.filter(m => m.alive).at(-1);
     const v = lead.body.linvel();
     console.log(`  t=${race.time.toFixed(0)} lead s=${lead.maxS.toFixed(0)} spd=${Math.hypot(v.x, v.z).toFixed(1)} last s=${last.maxS.toFixed(0)}`);
   }
-  if (race.finishOrder.length >= race.cps.at(-1).keep) break;
+  if (race.finishOrder.length >= race.count) break;
 }
 const ms = (performance.now() - t0) / steps;
 console.log(`done t=${race.time.toFixed(1)}s finished=${race.finishOrder.length} ${ms.toFixed(2)} ms/step`);
-const p = race.player; console.log(`player(autopilot): alive=${p.alive} finished=${p.finished} place=${p.place} rank=${p.rank} respawns=${p.respawns}`);
+track.zones.forEach((z, k) => { const a = zoneT[k]; console.log(`zone ${z.type}: ${a.length} passed, avg ${(a.reduce((x, y) => x + y, 0) / a.length).toFixed(1)}s, max ${Math.max(...a).toFixed(1)}s, length ${(z.s1 - z.s0)}`); });
 console.log('respawns by track position (s):', JSON.stringify(respawnAt));

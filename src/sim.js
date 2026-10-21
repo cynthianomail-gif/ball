@@ -7,6 +7,11 @@ export const RADIUS = 0.5;
 export const GRAVITY = 30;
 export const DT = 1 / 60;
 
+// 跳跳積木：lift 升起高度、omega 升降速度、hop 往上彈、kick 往前推、maxSpeed 超過就不再推
+// 升起高度要比彈珠半徑低，彈珠才滾得過去，不會像撞牆
+export const PISTON = { size: 0.95, lift: 0.32, omega: 5, hop: 4, kick: 14, maxSpeed: 34 };
+export const PEG_R = 0.28;
+
 export async function initPhysics() { await RAPIER.init(); }
 
 export const UPGRADES = [
@@ -72,25 +77,39 @@ export class Race {
     this._wall(track.endI - 1, 0.5);
     this.gate = this._wall(track.gateI, 0.3);
 
-    // 積木障礙
-    for (const o of track.obstacles) {
-      const fh = floorHeightAt(o.lat, track.half[o.i]);
-      const pos = trackPoint(track, o.i, o.lat, fh + o.size / 2 - 0.15);
-      const q = trackQuat(track, o.i).multiply(_q2.setFromAxisAngle(_yAxis, o.rot));
-      const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(pos.x, pos.y, pos.z).setRotation(q));
-      world.createCollider(RAPIER.ColliderDesc.cuboid(o.size / 2, o.size / 2, o.size / 2).setFriction(0.4).setRestitution(0.5), body);
-      o.pos = pos; o.quat = q.clone();
+    // 障礙區
+    this.crosses = [];
+    this.pistons = [];
+    for (const z of track.zones) {
+      // 旋轉十字：中間柱子 + 兩根交叉橫桿
+      for (const c of z.crosses) {
+        const pos = trackPoint(track, c.i, 0, 0);
+        const base = trackQuat(track, c.i);
+        const body = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(pos.x, pos.y, pos.z).setRotation(base));
+        const hl = track.half[c.i] - 0.5;
+        world.createCollider(RAPIER.ColliderDesc.cylinder(1.6, 0.45).setTranslation(0, 1.6, 0), body);
+        world.createCollider(RAPIER.ColliderDesc.cuboid(hl, 0.25, 0.25).setTranslation(0, 0.95, 0).setRestitution(0.8), body);
+        world.createCollider(RAPIER.ColliderDesc.cuboid(0.25, 0.25, hl).setTranslation(0, 0.95, 0).setRestitution(0.8), body);
+        this.crosses.push({ ...c, body, base: base.clone(), halfLen: hl });
+      }
+      // 跳跳積木：藏在地板下，輪流升起把彈珠往上往前彈
+      for (const pc of z.pistons) {
+        const body = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setRotation(trackQuat(track, pc.i)));
+        world.createCollider(RAPIER.ColliderDesc.roundCuboid(PISTON.size - 0.2, PISTON.size - 0.2, PISTON.size - 0.2, 0.2).setFriction(0.6).setRestitution(0.4), body);
+        const base = floorHeightAt(Math.max(0, Math.abs(pc.lat) - PISTON.size), track.half[pc.i]) - 0.06;
+        const pt = { ...pc, s: pc.i * STEP, body, base, phase: pc.row * 0.9 + (pc.col % 2) * Math.PI, top: base, vel: 0 };
+        this._movePiston(pt, 0);
+        body.setTranslation(trackPoint(track, pt.i, pt.lat, pt.top - PISTON.size), true);
+        this.pistons.push(pt);
+      }
+      // 彈珠台：一根根固定的釘子
+      for (const pg of z.pegs) {
+        const pos = trackPoint(track, pg.i, pg.lat, floorHeightAt(pg.lat, track.half[pg.i]) + 1.1);
+        const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(pos.x, pos.y, pos.z).setRotation(trackQuat(track, pg.i)));
+        world.createCollider(RAPIER.ColliderDesc.cylinder(1.3, PEG_R).setFriction(0.2).setRestitution(0.45), body);
+      }
     }
-    // 旋轉橫桿
-    this.sweepers = track.sweepers.map(sw => {
-      const pos = trackPoint(track, sw.i, 0, 0);
-      const base = trackQuat(track, sw.i);
-      const body = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(pos.x, pos.y, pos.z).setRotation(base));
-      const hl = track.half[sw.i] - 1.0;
-      world.createCollider(RAPIER.ColliderDesc.cylinder(1.6, 0.45).setTranslation(0, 1.6, 0), body);
-      world.createCollider(RAPIER.ColliderDesc.cuboid(hl, 0.25, 0.25).setTranslation(0, 0.95, 0).setRestitution(0.8), body);
-      return { ...sw, body, base: base.clone(), angle: this.rand() * Math.PI, halfLen: hl, pos };
-    });
+    this.pistonZone = track.zones.find(z => z.type === 'piston');
 
     // 檢查點：每過一個淘汰 elimRate（預設 20%）
     this.cps = track.checkpoints.map((i, k) => ({
@@ -132,7 +151,7 @@ export class Race {
         pattern: n % 6,
         body, collider, alive: true, finished: false, place: 0,
         row: r, idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0,
-        grounded: false, jumpCd: 0, dashCd: 0, airJumpsLeft: 0, stillTimer: 0,
+        grounded: false, jumpCd: 0, dashCd: 0, hopCd: 0, airJumpsLeft: 0, stillTimer: 0,
         stats: baseStats(), upgrades: [], elimT: 0, rank: n + 1,
         input: { x: 0, z: 0, jump: false, dash: false },
         ai: (isPlayer && !autopilot) ? null : this._makeAI(),
@@ -182,10 +201,14 @@ export class Race {
       if (this.countdown <= 0) { this.start(); this.events.push({ type: 'go' }); }
     }
 
-    for (const sw of this.sweepers) {
-      sw.angle += sw.speed * dt;
-      _q.copy(sw.base).multiply(_q2.setFromAxisAngle(_yAxis, sw.angle));
-      sw.body.setNextKinematicRotation(_q);
+    for (const c of this.crosses) {
+      c.angle += c.speed * dt;
+      _q.copy(c.base).multiply(_q2.setFromAxisAngle(_yAxis, c.angle));
+      c.body.setNextKinematicRotation(_q);
+    }
+    for (const pt of this.pistons) {
+      this._movePiston(pt, this.time);
+      pt.body.setNextKinematicTranslation(trackPoint(this.track, pt.i, pt.lat, pt.top - PISTON.size, _v));
     }
 
     for (const m of this.marbles) {
@@ -194,6 +217,7 @@ export class Race {
       if (this.phase === 'race' && !m.finished) {
         if (m.ai) this._think(m, dt);
         this._control(m, dt);
+        this._pistonBoost(m);
       }
     }
 
@@ -213,7 +237,7 @@ export class Race {
     const hit = this.world.castRay(this.ray, RADIUS + 0.22, true, undefined, undefined, m.collider);
     m.grounded = !!hit;
     if (m.grounded) m.airJumpsLeft = m.stats.airJumps;
-    m.jumpCd -= DT; m.dashCd -= DT;
+    m.jumpCd -= DT; m.dashCd -= DT; m.hopCd -= DT;
   }
 
   _control(m, dt) {
@@ -262,6 +286,35 @@ export class Race {
     }
   }
 
+  // 積木頂面 = base + 0～lift，用 1-cos 讓升降平滑
+  _movePiston(pt, t) {
+    const a = PISTON.omega * t - pt.phase;
+    pt.top = pt.base + PISTON.lift * (0.5 - 0.5 * Math.cos(a));
+    pt.vel = PISTON.lift * 0.5 * PISTON.omega * Math.sin(a);
+  }
+
+  // 碰到正在升起的積木：彈起來並往前推一把
+  _pistonBoost(m) {
+    const z = this.pistonZone;
+    if (!z || m.s < z.s0 || m.s > z.s1) return;
+    let best = null, bd = Infinity;
+    for (const pt of this.pistons) {
+      const d = Math.abs(pt.s - m.s) + Math.abs(pt.lat - m.lat);
+      if (d < bd) { bd = d; best = pt; }
+    }
+    if (!best || Math.abs(best.s - m.s) > PISTON.size || Math.abs(best.lat - m.lat) > PISTON.size) return;
+    if (best.vel <= 0 || m.h - RADIUS > best.top + 0.4 || m.hopCd > 0) return;
+    m.hopCd = 0.15;
+    const v = m.body.linvel(), tv = this.track.T[m.idx], uv = this.track.U[m.idx];
+    const kick = v.x * tv.x + v.y * tv.y + v.z * tv.z < PISTON.maxSpeed ? PISTON.kick : 0;
+    m.body.setLinvel({
+      x: v.x + tv.x * kick + uv.x * PISTON.hop,
+      y: v.y + tv.y * kick + uv.y * PISTON.hop,
+      z: v.z + tv.z * kick + uv.z * PISTON.hop,
+    }, true);
+    this.events.push({ type: 'hop', m });
+  }
+
   _think(m, dt) {
     const ai = m.ai, t = this.track, inp = m.input;
     const p = m.body.translation(), v = m.body.linvel();
@@ -270,26 +323,10 @@ export class Race {
     ai.nextLane -= dt;
     if (ai.nextLane <= 0) { ai.laneTarget = (this.rand() * 2 - 1) * 0.45; ai.nextLane = 2 + this.rand() * 5; }
 
-    // 前方積木：換車道或跳
+    // 快到十字旋轉門時偶爾跳一下
     let wantJump = false;
-    const ahead = m.idx + Math.round(26 / STEP);
-    for (const o of t.obstacles) {
-      if (o.i < m.idx - 2 || o.i > ahead) continue;
-      const hw = t.half[o.i];
-      const myLat = ai.laneTarget * hw;
-      const clear = o.size / 2 + 1.3;
-      if (Math.abs(myLat - o.lat) < clear) {
-        // 往另一側閃
-        const left = o.lat - clear - 0.3, right = o.lat + clear + 0.3;
-        const lOk = left > -hw + 1, rOk = right < hw - 1;
-        if (lOk && (!rOk || Math.abs(left - m.lat) < Math.abs(right - m.lat))) ai.laneTarget = left / hw;
-        else if (rOk) ai.laneTarget = right / hw;
-      }
-      const dist = (o.i - m.idx) * STEP;
-      if (dist > 0 && dist < 2.2 + speed * 0.12 && Math.abs(m.lat - o.lat) < o.size / 2 + 0.6) wantJump = true;
-    }
-    for (const sw of this.sweepers) {
-      const dist = (sw.i - m.idx) * STEP;
+    for (const c of this.crosses) {
+      const dist = (c.i - m.idx) * STEP;
       if (dist > 0 && dist < 3 + speed * 0.1 && this.rand() < 0.08 * ai.skill) wantJump = true;
     }
     ai.lane += (ai.laneTarget - ai.lane) * Math.min(1, dt * 2.5);
@@ -340,6 +377,8 @@ export class Race {
   respawn(m) {
     const t = this.track;
     let i = Math.max(1, m.safeIdx - 8);
+    // 跳台前要留 30 單位助跑，不然會一直跳不過去
+    for (const [a] of t.gaps) if (i > a - 30 / STEP && i <= a) i = Math.max(1, a - Math.round(30 / STEP));
     while (i > 1 && !t.floor[i]) i--;
     const lat = (this.rand() * 2 - 1) * 0.3 * t.half[i];
     const p = trackPoint(t, i, lat, floorHeightAt(lat, t.half[i]) + RADIUS + 1.0);
