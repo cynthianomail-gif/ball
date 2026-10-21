@@ -18,6 +18,11 @@ const PISTON_PHASE_COL = [0, Math.PI / 2, Math.PI, Math.PI * 1.5];
 // 在水裡阻尼加大到 damp、浮力把重力減掉 buoy 倍；入口 ease 單位內漸變，離開恢復原阻尼 BASE_DAMP
 export const WATER = { damp: 0.33, buoy: 0.45, ease: 3 };
 const BASE_DAMP = 0.12;
+// 出界救援（像雲上釣魚人）：等一下 → 手抓著彈珠從高處降下 → 在跑道上停一下 → 放手 → 手收回
+// 單位是秒；height＝手降下前的高度；drop＝放手時彈珠離地的空隙；speed＝放手後沿賽道的初速；holdMax＝落點被擋時最多多等幾秒
+export const RESCUE = { wait: 0.35, down: 0.75, hold: 0.2, up: 0.7, height: 10, drop: 0.3, speed: 7, holdMax: 0.6 };
+const smooth = u => u * u * (3 - 2 * u);
+const popIn = u => { const c = 1.7, v = u - 1; return 1 + (c + 1) * v * v * v + c * v * v; };   // 先衝過頭再回彈
 // 彈珠互撞的彈性（撞了會彈開，玻璃珠的手感）；彈珠自己的彈性只用在互撞
 export const MARBLE_REST = 0.6;
 // 其他東西一律用 Min 規則：填的數字就是彈珠撞到它時實際的彈性（不會被彈珠的 0.6 拉高）
@@ -186,7 +191,7 @@ export class Race {
         color: isPlayer && playerColor != null ? playerColor : palette ? palette[n % palette.length] : PALETTE[(n * 7) % PALETTE.length],
         pattern: n % 6,
         body, collider, alive: true, finished: false, place: 0,
-        row: r, idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0,
+        row: r, idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0, rescue: null,
         grounded: false, dashCd: 0, hitCd: 0, pv: { x: 0, y: 0, z: 0 }, stillTimer: 0, funnel: null,
         stats: baseStats(), upgrades: [], elimT: 0, rank: n + 1,
         input: { x: 0, z: 0, dash: false },
@@ -249,6 +254,10 @@ export class Race {
 
     for (const m of this.marbles) {
       if (!m.alive) continue;
+      if (m.rescue) {
+        this._rescue(m, dt);
+        if (m.rescue?.held) continue;   // 被手抓著：不碰撞、不受控
+      }
       this._sense(m);
       if (this.phase === 'race' && !m.finished && !m.funnel) {
         // 彈珠台、夾彎裡完全交給重力（AI 的防側滑會把自己頂在釘子或牆上）
@@ -264,7 +273,7 @@ export class Race {
 
     this._clacks();
     for (const m of this.marbles) {
-      if (!m.alive) continue;
+      if (!m.alive || m.rescue?.held) continue;
       this._impact(m);
       this._trackPos(m, dt);
     }
@@ -278,11 +287,11 @@ export class Race {
     const ms = this.marbles;
     for (let a = 0; a < ms.length; a++) {
       const A = ms[a];
-      if (!A.alive) continue;
+      if (!A.alive || A.rescue?.held) continue;
       const p = A.body.translation();
       for (let b = a + 1; b < ms.length; b++) {
         const B = ms[b];
-        if (!B.alive) continue;
+        if (!B.alive || B.rescue?.held) continue;
         const q = B.body.translation();
         const dx = q.x - p.x, dy = q.y - p.y, dz = q.z - p.z, d = Math.hypot(dx, dy, dz), key = a * 1024 + b;
         if (d > 2 * RADIUS + 0.15) { this.touching.delete(key); continue; }
@@ -448,7 +457,7 @@ export class Race {
       m.offTimer = 0;
       if (m.grounded && t.floor[best] && Math.abs(m.lat) < hw && m.h < t.wallH[best]) m.safeIdx = best;
     }
-    if (m.offTimer > 0.6 || m.h < -15) this.respawn(m);
+    if (m.offTimer > 0.6 || m.h < -15) this._startRescue(m);
   }
 
   // 在漏斗裡：不靠 AI，只靠重力和邊緣繞圈；進度用「離洞口多近」來算
@@ -488,24 +497,105 @@ export class Race {
     return false;
   }
 
-  respawn(m) {
+  // 出界：選好放回的位置，彈珠停用物理交給手（m.rescue）。x y z＝手與彈珠此刻的位置，sway＝晃動幅度 0～1，
+  // open＝手指張開 0～1，vis＝手的大小 0～1，held＝彈珠還在手上（false＝已放手、手正在收回）
+  _startRescue(m) {
     const t = this.track;
     let i = Math.max(1, m.safeIdx - 8);
     while (i > 1 && !t.floor[i]) i--;
-    const lat = (this.rand() * 2 - 1) * 0.3 * t.half[i];
-    const p = trackPoint(t, i, lat, floorHeightAt(lat, t.half[i], t.rise[i]) + RADIUS + 1.0);
-    m.body.setTranslation(p, true);
     const tv = t.T[i];
-    m.body.setLinvel({ x: tv.x * 7, y: tv.y * 7, z: tv.z * 7 }, true);
+    const r = m.rescue = { t: 0, held: true, relT: 0, i, tx: tv.x, tz: tv.z, bx: 0, by: 0, bz: 0, x: 0, y: 0, z: 0, sway: 1, open: 0, vis: 0 };
+    this._rescuePlace(r, (this.rand() * 2 - 1) * 0.3 * t.half[i]);
+    r.x = r.bx; r.y = r.by + RESCUE.height; r.z = r.bz;
+    m.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     m.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-    m.idx = i; m.safeIdx = i; m.offTimer = 0; m.respawns++;
+    m.body.setEnabled(false);
+    m.body.setTranslation({ x: r.x, y: r.y, z: r.z }, true);
+    m.idx = i; m.safeIdx = i; m.offTimer = 0; m.funnel = null; m.stillTimer = 0;
+    m.s = i * STEP; m.lat = r.lat; m.h = 0;
+    this.events.push({ type: 'rescue', m });
+  }
+
+  // 放下的位置：跑道橫向 lat 處、彈珠剛好離地 RESCUE.drop
+  _rescuePlace(r, lat) {
+    const t = this.track, i = r.i;
+    const p = trackPoint(t, i, lat, floorHeightAt(lat, t.half[i], t.rise[i]) + RADIUS + RESCUE.drop, _v);
+    r.lat = lat; r.bx = p.x; r.by = p.y; r.bz = p.z;
+  }
+
+  // 落點附近有沒有別的彈珠（或另一隻手也要放在這）
+  _spotFree(r, m) {
+    for (const o of this.marbles) {
+      if (o === m || !o.alive) continue;
+      if (o.rescue?.held) {
+        if (o.id < m.id && Math.hypot(o.rescue.bx - r.bx, o.rescue.bz - r.bz) < 2 * RADIUS + 0.4) return false;
+        continue;
+      }
+      const p = o.body.translation();
+      if (Math.hypot(p.x - r.bx, p.y - r.by, p.z - r.bz) < 2 * RADIUS + 0.3) return false;
+    }
+    return true;
+  }
+
+  // 被擋住就左右錯開一點
+  _shiftSpot(r, m) {
+    const lim = 0.8 * this.track.half[r.i], lat0 = r.lat;
+    for (const d of [0.9, -0.9, 1.8, -1.8]) {
+      const lat = lat0 + d;
+      if (Math.abs(lat) > lim) continue;
+      this._rescuePlace(r, lat);
+      if (this._spotFree(r, m)) return;
+    }
+    this._rescuePlace(r, lat0);
+  }
+
+  _rescue(m, dt) {
+    const r = m.rescue, K = RESCUE, tDrop = K.wait + K.down + K.hold;
+    r.t += dt;
+    if (!r.held) {
+      // 放手後：手張開、慢慢往上收，最後縮小消失
+      const u = Math.min(1, (r.t - r.relT) / K.up);
+      r.open = Math.min(1, (r.t - r.relT) / 0.15);
+      r.y = r.by + K.height * u * u;
+      r.sway = u;
+      r.vis = u < 0.75 ? 1 : 1 - smooth((u - 0.75) / 0.25);
+      if (u >= 1) m.rescue = null;
+      return;
+    }
+    if (r.t >= K.wait && !this._spotFree(r, m)) this._shiftSpot(r, m);
+    // 等 → 降下（手離地面的高度 h 由 height 緩降到 0）→ 停住
+    const h = r.t < K.wait ? K.height : K.height * (1 - smooth(Math.min(1, (r.t - K.wait) / K.down)));
+    r.vis = r.t < K.wait ? popIn(r.t / K.wait) : 1;
+    r.sway = h / K.height;
+    const sw = r.sway * 0.25;
+    const k = Math.min(1, dt * 10);
+    r.x += (r.bx + Math.sin(r.t * 5) * sw - r.x) * k;
+    r.z += (r.bz + Math.cos(r.t * 4) * sw - r.z) * k;
+    r.y = r.by + h;
+    m.body.setTranslation({ x: r.x, y: r.y, z: r.z }, true);
+    if (r.t < tDrop) return;
+    if (r.t < tDrop + K.holdMax && (Math.hypot(r.x - r.bx, r.z - r.bz) > 0.08 || !this._spotFree(r, m))) return;
+    this._release(m, r);
+  }
+
+  // 放手：彈珠恢復物理，給沿賽道的小速度；手留在原地準備收回
+  _release(m, r) {
+    const tv = this.track.T[r.i], sp = RESCUE.speed;
+    r.held = false; r.relT = r.t;
+    r.x = r.bx; r.y = r.by; r.z = r.bz;
+    m.body.setEnabled(true);
+    m.body.setTranslation({ x: r.bx, y: r.by, z: r.bz }, true);
+    m.body.setLinvel({ x: tv.x * sp, y: tv.y * sp, z: tv.z * sp }, true);
+    m.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    m.pv.x = tv.x * sp; m.pv.y = tv.y * sp; m.pv.z = tv.z * sp;
     m.hitCd = 0.1;                 // 直接設的速度不算撞擊
+    m.respawns++;
     this.events.push({ type: 'respawn', m });
   }
 
   _rules() {
     for (const m of this.marbles) {
-      if (!m.alive || m.finished) continue;
+      if (!m.alive || m.finished || m.rescue?.held) continue;
       while (m.cp < this.cps.length && m.maxS >= this.cps[m.cp].s) {
         const cp = this.cps[m.cp];
         if (cp.closed) break;
@@ -537,6 +627,7 @@ export class Race {
 
   eliminate(m) {
     m.alive = false;
+    m.rescue = null;
     m.elimT = this.time;
     m.elimPos = { ...m.body.translation() };
     m.body.setEnabled(false);
