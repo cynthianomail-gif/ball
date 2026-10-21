@@ -11,6 +11,7 @@ const race = new Race(track, { count: 10, seed, player: false });
 const zoneT = track.zones.map(() => []);
 const enter = new Map();
 const respawnAt = {};
+const rescueStart = new Map(), rescueT = [];   // 救援開始到放下的秒數
 const t0 = performance.now();
 let steps = 0, lastLog = 0;
 while (steps < 60 * 240) {
@@ -18,7 +19,11 @@ while (steps < 60 * 240) {
   for (const e of race.events) {
     if (e.type === 'elim') console.log(`t=${race.time.toFixed(1)} cp${e.k + 1} closed, eliminated ${e.list.length}, alive ${race.aliveCount()}`);
     if (e.type === 'finish' && e.place <= 3) console.log(`t=${race.time.toFixed(1)} finish #${e.place} ${e.m.name} respawns=${e.m.respawns}`);
-    if (e.type === 'respawn') { const b = Math.round(e.m.safeIdx * STEP / 10) * 10; respawnAt[b] = (respawnAt[b] || 0) + 1; }
+    if (e.type === 'rescue') rescueStart.set(e.m.id, race.time);
+    if (e.type === 'respawn') {
+      const b = Math.round(e.m.safeIdx * STEP / 10) * 10; respawnAt[b] = (respawnAt[b] || 0) + 1;
+      rescueT.push(race.time - rescueStart.get(e.m.id));
+    }
   }
   race.events.length = 0;
   for (const m of race.marbles) track.zones.forEach((z, k) => {
@@ -38,3 +43,4 @@ const ms = (performance.now() - t0) / steps;
 console.log(`done t=${race.time.toFixed(1)}s finished=${race.finishOrder.length} ${ms.toFixed(2)} ms/step`);
 track.zones.forEach((z, k) => { const a = zoneT[k]; console.log(`zone ${z.type}: ${a.length} passed, avg ${(a.reduce((x, y) => x + y, 0) / a.length).toFixed(1)}s, max ${Math.max(...a).toFixed(1)}s, length ${(z.s1 - z.s0)}`); });
 console.log('respawns by track position (s):', JSON.stringify(respawnAt));
+if (rescueT.length) console.log(`rescue start->release: n=${rescueT.length} min ${Math.min(...rescueT).toFixed(2)}s max ${Math.max(...rescueT).toFixed(2)}s`);

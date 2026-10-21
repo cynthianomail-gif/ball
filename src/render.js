@@ -736,6 +736,74 @@ export class View {
     this.bubbleMesh.instanceMatrix.needsUpdate = true;
   }
 
+  // 救援的白手套（sim.js 的 m.rescue）：手套用物件池，沒人被救就全部藏起來
+  // 以彈珠中心為原點：手掌壓在彈珠上方，四指＋拇指沿球面往下包住，往上接袖口和手臂
+  _buildHand() {
+    const white = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55 });
+    const band = new THREE.MeshStandardMaterial({ color: 0xe8483f, roughness: 0.5 });
+    const R = RADIUS + 0.16;             // 手指中心線離彈珠中心的距離
+    const root = Math.PI * 0.2;          // 指根在球面上離頂點的角度
+    const finger = (tip, rad) => {
+      const pts = [];
+      for (let k = 0; k <= 5; k++) {
+        const a = root + (tip - root) * k / 5;
+        pts.push(new THREE.Vector3(R * (Math.sin(a) - Math.sin(root)), R * (Math.cos(a) - Math.cos(root)), 0));
+      }
+      const g = new THREE.Group();
+      g.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 10, rad, 10), white));
+      const cap = new THREE.SphereGeometry(rad, 12, 10);
+      for (const p of [pts[0], pts[5]]) { const s = new THREE.Mesh(cap, white); s.position.copy(p); g.add(s); }
+      return g;
+    };
+    const hand = new THREE.Group();
+    const palm = new THREE.Mesh(new THREE.SphereGeometry(0.5, 20, 14), white);
+    palm.scale.set(1.15, 0.6, 1.0); palm.position.y = RADIUS + 0.28;
+    const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.4, 0.34, 18), white);
+    cuff.position.y = RADIUS + 0.78;
+    const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.43, 0.43, 0.14, 18), band);
+    ring.position.y = RADIUS + 1.02;
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 7, 14), white);
+    arm.position.y = RADIUS + 1.09 + 3.5;
+    for (const o of [palm, cuff, ring, arm]) { o.castShadow = true; hand.add(o); }
+    // 指頭：外層轉方位角，內層在指根轉軸，張開時整根往外掀
+    const fingers = [];
+    const add = (az, tip, rad) => {
+      const outer = new THREE.Group(), pivot = new THREE.Group();
+      outer.rotation.y = az - Math.PI / 2;
+      pivot.position.set(R * Math.sin(root), R * Math.cos(root), 0);
+      const f = finger(tip, rad);
+      f.traverse(o => { o.castShadow = true; });
+      pivot.add(f); outer.add(pivot); hand.add(outer);
+      fingers.push(pivot);
+    };
+    add(-0.8, Math.PI * 0.44, 0.13); add(-0.27, Math.PI * 0.47, 0.14);
+    add(0.27, Math.PI * 0.47, 0.14); add(0.8, Math.PI * 0.44, 0.13);
+    add(-2.2, Math.PI * 0.42, 0.16);   // 拇指
+    const wrap = new THREE.Group();
+    wrap.add(hand); wrap.rotation.order = 'YXZ';
+    wrap.visible = false;
+    this.scene.add(wrap);
+    return { wrap, fingers };
+  }
+
+  _updateHands() {
+    const hands = this.hands ??= [];
+    let n = 0;
+    for (const m of this.race.marbles) {
+      const r = m.rescue;
+      if (!m.alive || !r) continue;
+      const h = hands[n] ??= this._buildHand();
+      n++;
+      const w = h.wrap;
+      w.visible = true;
+      w.position.set(r.x, r.y, r.z);
+      w.scale.setScalar(Math.max(0.001, r.vis * 1.15));
+      w.rotation.set(Math.cos(r.t * 4) * 0.1 * r.sway, Math.atan2(r.tx, r.tz), Math.sin(r.t * 5) * 0.15 * r.sway);
+      for (const f of h.fingers) f.rotation.z = r.open * 0.9;
+    }
+    for (let k = n; k < hands.length; k++) hands[k].wrap.visible = false;
+  }
+
   _arch(i, tex) {
     const t = this.track;
     const hw = t.half[i] + WALL_T + 1.3;
@@ -820,7 +888,8 @@ export class View {
     race.marbles.forEach((m, k) => {
       const mesh = this.meshes[k];
       if (m.alive) {
-        mesh.position.lerpVectors(this.prev[k].p, _p.copy(m.body.translation()), alpha);
+        if (m.rescue?.held) mesh.position.set(m.rescue.x, m.rescue.y, m.rescue.z);   // 被手抓著：跟著手走
+        else mesh.position.lerpVectors(this.prev[k].p, _p.copy(m.body.translation()), alpha);
         mesh.quaternion.slerpQuaternions(this.prev[k].q, _q.copy(m.body.rotation()), alpha);
         mesh.scale.setScalar(1);
       } else {
@@ -845,6 +914,7 @@ export class View {
       mesh.instanceMatrix.needsUpdate = true;
     }
     this._updateBubbles(dt);
+    this._updateHands();
     if (race.phase === 'race' && this.gateMesh.visible) {
       this.gateMesh.position.addScaledVector(this.track.U[this.track.gateI], -dt * 8);
       if (race.time > 5) this.gateMesh.visible = false;
