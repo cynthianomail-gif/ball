@@ -73,7 +73,7 @@ function setupRace() {
   view.setRace(race);
   view.setMarked([]);
   view.focusId = -1;
-  view.camMode = 1;   // 下注時用俯瞰全景
+  view.camMode = 0;   // 預設上帝視角（下注畫面背景也是）
   phase = 'betting'; bets = []; settled = false; acc = 0; lastCount = 4;
   $('tags').innerHTML = '';
   $('hud').classList.add('hidden');

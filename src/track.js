@@ -43,7 +43,7 @@ export const ZONE_INFO = {
 export const FUNNEL_HOLE = 1.1;        // 洞口半徑：比兩顆並排（直徑 2）再大一點，才不會兩顆互卡堵住
 export const ZIGZAG_LANE = 0.7;        // 夾彎溝槽的半寬：剛好放得下一顆彈珠（直徑 1），只能排成一列
 const ZIGZAG_BANK = 0.5;              // 夾彎彎道的傾斜角（弧度）
-const ZIGZAG_WALL = 1.4;              // 夾彎溝槽的牆高（從溝底算）
+const ZIGZAG_WALL = 1.1;              // 夾彎溝槽的牆高（從溝底算，彈珠直徑 1）
 const ZIGZAG_TALL = 22;               // 夾彎開頭這麼長的一段牆還是高的
 export const FUNNEL_LANE = 3.5;        // 進漏斗前賽道縮到這個半寬
 

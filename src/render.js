@@ -107,7 +107,7 @@ function bannerTex(text, sub, bg = '#fff7e0', fg = '#3a2a1a', checker = false) {
 // ---------- 主畫面類別 ----------
 // 鏡頭模式：dist 在目標後方多遠、height 多高、ahead 看目標前方多遠
 export const CAM_MODES = [
-  { name: '上帝視角', dist: 13, height: 22, ahead: 3, lift: 0, shadow: 45 },
+  { name: '上帝視角', dist: 8, height: 14, ahead: 2, lift: 0, shadow: 35 },
   { name: '俯瞰全景', dist: 3, height: 42, ahead: 4, lift: 0, shadow: 60 },
   { name: '追尾', dist: 8.5, height: 3.6, ahead: 4, lift: 0.8, shadow: 40 },
 ];
