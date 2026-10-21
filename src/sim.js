@@ -1,7 +1,7 @@
 // 物理世界 + 比賽規則 + AI（不含畫面，可在 Node 裡跑無頭模擬）
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { STEP, trackPoint, trackQuat, mulberry32, floorHeightAt, WALL_H, FUNNEL_HOLE, veeOutline, FORK, forkHalf } from './track.js';
+import { STEP, trackPoint, trackQuat, mulberry32, floorHeightAt, WALL_H, FUNNEL_HOLE, FORK, forkHalf } from './track.js';
 
 export const RADIUS = 0.5;
 export const GRAVITY = 30;
@@ -18,36 +18,6 @@ const BASE_DAMP = 0.12;
 export const MARBLE_REST = 0.6;
 // 其他東西一律用 Min 規則：填的數字就是彈珠撞到它時實際的彈性（不會被彈珠的 0.6 拉高）
 const rest = (desc, e) => desc.setRestitution(e).setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min);
-// V 字槽：slot 槽的半寬（前後，彈珠直徑 1；玻璃外側在 slot + 0.1，賽道末端剛好頂到這裡，track.js 的 VEE.front）
-// plank V 字板厚度的一半、frontGap 前面玻璃頂比賽道末端低多少
-// pass：槽只有一顆彈珠寬，幾顆擠在一起進來會正面相撞，像牛頓擺一樣把擺動傳給對方、自己停下來掉洞
-//       （單獨進來的會來回 3 次左右，擠在一起的常常 0～1 次）；設成 true 時彈珠在槽裡彼此穿過去，每顆都能自己來回滾
-//       預設 false：彈珠一定會互撞（看起來比較真實）
-export const TOWER = { slot: 0.65, plank: 0.12, frontGap: 0.1, pass: false };
-const TOWER_GHOST = 0x0002fffd;    // 碰撞群組：自己屬於第 2 組、不跟第 2 組碰（＝槽裡的彈珠彼此不碰）
-// 前面玻璃的高度：下半片頂端齊賽道末端（彈回來的彈珠只會落回賽道），上半片只在賽道進來的那一段（賽道的寬度）留一個窗
-export const towerGlass = w => ({ yLo: w.yV - 1.2, yFront: w.yTop - TOWER.frontGap, yBack: w.yTop + 2.5, span: [-w.span - 0.2, w.entryX - w.lane] });
-// V 字的板子：沿著剖面折線（平底、圓弧、斜板）一段一塊，平底是正中間一整塊，斜的部分左右對稱
-// 回傳在「往後傾斜的 V 座標」裡的中心（y 以 yV 為 0）、長度、角度
-export const veePlanks = w => {
-  const pts = veeOutline(w), out = [{ x: 0, y: -TOWER.plank, L: 2 * pts[1][0], a: 0 }];
-  for (const side of [-1, 1]) for (let k = 1; k + 1 < pts.length; k++) {
-    const [x0, y0] = pts[k], [x1, y1] = pts[k + 1];
-    const a = Math.atan2(y1 - y0, x1 - x0), L = Math.hypot(x1 - x0, y1 - y0);
-    // 板面對齊折線，板子往下長出厚度；稍微加長一點，接縫才不會有縫
-    const mx = (x0 + x1) / 2 + Math.sin(a) * TOWER.plank, my = (y0 + y1) / 2 - Math.cos(a) * TOWER.plank;
-    out.push({ x: side * mx, y: my, L: L + 0.03, a: side * a });
-  }
-  return out;
-};
-// V 字板前後的半厚：板子往後傾斜，要稍微加長才會剛好頂到玻璃和後板
-export const veeDepth = w => TOWER.slot / Math.cos(w.tilt) + 0.03;
-// 往後傾斜的 V 座標 → 塔座標（x 右、y 上、z 往前＝玻璃那面）：繞 x 軸轉，後面（z 負）比較低
-export const veeTilt = (w, x, y, z = 0) => [x, w.yV + y * Math.cos(w.tilt) + z * Math.sin(w.tilt), -y * Math.sin(w.tilt) + z * Math.cos(w.tilt)];
-// 金色積木：亮著的時候被它彈到，就飛過 U 字內側直接落到回程直線
-// period 閃爍週期、litFrac 一個週期裡亮多久、time 飛行秒數、land 落地後的最低速度
-export const GOLD = { period: 1.6, litFrac: 0.6, time: 1.8, land: 18 };
-export function goldLit(pt, t) { return ((t / GOLD.period + pt.row * 0.37) % 1) < GOLD.litFrac; }
 
 export async function initPhysics() { await RAPIER.init(); }
 
@@ -81,8 +51,6 @@ const _v = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _yAxis = new THREE.Vector3(0, 1, 0);
-const _zAxis = new THREE.Vector3(0, 0, 1);
-const _xAxis = new THREE.Vector3(1, 0, 0);
 
 export class Race {
   // player: false 時沒有玩家彈珠，全部交給 AI（下注模式）
@@ -113,9 +81,8 @@ export class Race {
     this._wall(track.startI + 1, 0.5);
     this._wall(track.endI - 1, 0.5);
     this.gate = this._wall(track.gateI, 0.3);
-    // 漏斗洞口下方的出口賽道後面加一道擋板，接住掉下來的彈珠（V 字槽的在 _buildTowers 裡）
+    // 漏斗洞口下方的出口賽道後面加一道擋板，接住掉下來的彈珠
     for (const f of track.funnels) this._wall(f.exitI, 0.4);
-    this._buildTowers();
 
     // 障礙區
     this.crosses = [];
@@ -161,8 +128,8 @@ export class Race {
     }
     this.pistonZone = track.zones.find(z => z.type === 'piston');
     this.waterZone = track.zones.find(z => z.type === 'water');
-    // 彈珠台、夾彎、分岔、雪橇彎道、水底隧道裡沒有 AI，只靠重力（夾彎裡 AI 會一直往彎道牆上撞；水裡 AI 的推力會把實力差放大成速度差）
-    this.freeZones = track.zones.filter(z => ['pegs', 'zigzag', 'fork', 'sled', 'water'].includes(z.type));
+    // 彈珠台、夾彎、分岔、水底隧道裡沒有 AI，只靠重力（夾彎裡 AI 會一直往彎道牆上撞；水裡 AI 的推力會把實力差放大成速度差）
+    this.freeZones = track.zones.filter(z => ['pegs', 'zigzag', 'fork', 'water'].includes(z.type));
 
     // 檢查點：每過一個淘汰 elimRate（預設 20%）
     this.cps = track.checkpoints.map((i, k) => ({
@@ -192,7 +159,7 @@ export class Race {
       const s = track.gateI * STEP - 2.5 - r * 1.6;
       const i = Math.round(s / STEP);
       const lat = (c - (cols - 1) / 2) * 1.35;
-      const fh = floorHeightAt(lat, track.half[i], track.rise[i], track.pow[i]);
+      const fh = floorHeightAt(lat, track.half[i], track.rise[i]);
       const p = trackPoint(track, i, lat, fh + RADIUS + 0.05);
       const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(p.x, p.y, p.z)
         .setCcdEnabled(true).setLinearDamping(BASE_DAMP).setAngularDamping(0.4));
@@ -204,7 +171,7 @@ export class Race {
         pattern: n % 6,
         body, collider, alive: true, finished: false, place: 0,
         row: r, idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0,
-        grounded: false, dashCd: 0, hopCd: 0, hitCd: 0, pv: { x: 0, y: 0, z: 0 }, stillTimer: 0, flight: null, funnel: null, tower: null, shortcuts: 0,
+        grounded: false, dashCd: 0, hopCd: 0, hitCd: 0, pv: { x: 0, y: 0, z: 0 }, stillTimer: 0, funnel: null,
         stats: baseStats(), upgrades: [], elimT: 0, rank: n + 1,
         input: { x: 0, z: 0, dash: false },
         ai: (isPlayer && !autopilot) ? null : this._makeAI(),
@@ -267,7 +234,7 @@ export class Race {
     for (const m of this.marbles) {
       if (!m.alive) continue;
       this._sense(m);
-      if (this.phase === 'race' && !m.finished && !m.flight && !m.funnel && !m.tower) {
+      if (this.phase === 'race' && !m.finished && !m.funnel) {
         // 彈珠台、夾彎裡完全交給重力（AI 的防側滑會把自己頂在釘子或牆上）
         const free = this.freeZones.some(z => m.s > z.s0 - 1 && m.s < z.s1);
         if (m.ai && !free) this._think(m, dt);
@@ -306,7 +273,6 @@ export class Race {
         if (d > 2 * RADIUS + 0.15) { this.touching.delete(key); continue; }
         if (d > 2 * RADIUS + 0.05 || this.touching.has(key)) continue;
         this.touching.add(key);
-        if (A.ghost || B.ghost) continue;           // 蹺蹺板槽裡穿過去的不算
         const closing = ((A.pv.x - B.pv.x) * dx + (A.pv.y - B.pv.y) * dy + (A.pv.z - B.pv.z) * dz) / (d || 1);
         if (closing < 1.2) continue;
         A.hitCd = B.hitCd = 0.06;                   // 同一下不要再算成撞牆
@@ -321,8 +287,8 @@ export class Race {
     const dx = v.x - pv.x, dy = v.y - pv.y + GRAVITY * DT, dz = v.z - pv.z, dv = Math.hypot(dx, dy, dz);
     pv.x = v.x; pv.y = v.y; pv.z = v.z;
     m.hitCd -= DT;
-    // 積木彈、抄近路、衝刺是程式直接改速度，不算撞擊
-    if (dv < 2.5 || m.hitCd > 0 || m.flight || m.hopCd > 0.1 || m.dashCd > 0.7) return;
+    // 積木彈、衝刺是程式直接改速度，不算撞擊
+    if (dv < 2.5 || m.hitCd > 0 || m.hopCd > 0.1 || m.dashCd > 0.7) return;
     m.hitCd = 0.06;
     // 地板彈性 0.25：速度變化 ≈ 1.25 × 撞下去的速度；落地要撞得夠快才響
     const landing = dy > 0.6 * dv, k = landing ? (dv / 1.25 - 4) / 20 : (dv - 2) / 14;
@@ -388,10 +354,10 @@ export class Race {
     m.body.applyImpulse({ x: rv.x * side + tv.x * k, y: 0, z: rv.z * side + tv.z * k }, true);
   }
 
-  // 水底隧道：在水裡阻尼加大、浮力減輕重力（入口漸變）；飛行中、漏斗和 V 字槽裡的略過
+  // 水底隧道：在水裡阻尼加大、浮力減輕重力（入口漸變）；漏斗裡的略過
   _water(m) {
     const z = this.waterZone;
-    if (!z || m.flight || m.funnel || m.tower) return;
+    if (!z || m.funnel) return;
     const k = m.s > z.s0 && m.s < z.s1 ? Math.min(1, (m.s - z.s0) / WATER.ease) : 0;
     if (!k && !m.wet) return;
     m.wet = k > 0;
@@ -417,7 +383,6 @@ export class Race {
     }
     if (!best || Math.abs(best.s - m.s) > best.hd || Math.abs(best.lat - m.lat) > best.hw) return;
     if (best.vel <= 0 || m.h - RADIUS > best.top + 0.4 || m.hopCd > 0) return;
-    if (best.gold && goldLit(best, this.time)) { this._launch(m, best); return; }
     m.hopCd = 0.15;
     const v = m.body.linvel(), tv = this.track.T[m.idx], uv = this.track.U[m.idx];
     const kick = v.x * tv.x + v.y * tv.y + v.z * tv.z < PISTON.maxSpeed ? PISTON.kick : 0;
@@ -427,32 +392,6 @@ export class Race {
       z: v.z + tv.z * kick + uv.z * PISTON.hop,
     }, true);
     this.events.push({ type: 'hop', m });
-  }
-
-  // 抄近路：算好拋物線，GOLD.time 秒後剛好落在回程直線上
-  _launch(m, pt) {
-    const T = GOLD.time, from = m.body.translation();
-    const to = trackPoint(this.track, pt.land, 0, RADIUS + 0.1, _v);
-    m.body.setLinearDamping(0);              // 沒有空氣阻力，拋物線才準
-    m.body.setLinvel({
-      x: (to.x - from.x) / T,
-      y: (to.y - from.y) / T + 0.5 * GRAVITY * T,
-      z: (to.z - from.z) / T,
-    }, true);
-    m.flight = { landT: this.time + T, land: pt.land };
-    m.shortcuts++;
-    this.events.push({ type: 'shortcut', m });
-  }
-
-  // 落地：接回賽道位置，順著賽道方向繼續滾
-  _land(m) {
-    const t = this.track, i = m.flight.land;
-    m.flight = null;
-    m.idx = i; m.safeIdx = i; m.offTimer = 0; m.hitCd = 0.1;
-    m.body.setLinearDamping(BASE_DAMP);
-    const v = m.body.linvel(), tv = t.T[i];
-    const sp = Math.max(GOLD.land, Math.hypot(v.x, v.z) * 0.7);
-    m.body.setLinvel({ x: tv.x * sp, y: tv.y * sp, z: tv.z * sp }, true);
   }
 
   _think(m, dt) {
@@ -483,19 +422,13 @@ export class Race {
       }
     } else m.stillTimer = 0;
 
-    // 蹺蹺板入口前不衝刺：衝太快會直接飛過 V、一趟都沒盪就掉洞
-    const nearVee = t.towers.some(w => m.idx > w.i0 - 40 / STEP && m.idx <= w.i0);
-    if (!nearVee && m.stats.dashes > 0 && m.dashCd <= 0 && m.grounded && this.rand() < 0.0015 * (0.5 + ai.bravery)) inp.dash = true;
+    if (m.stats.dashes > 0 && m.dashCd <= 0 && m.grounded && this.rand() < 0.0015 * (0.5 + ai.bravery)) inp.dash = true;
   }
 
   _trackPos(m, dt) {
     const t = this.track;
-    if (m.flight) {
-      if (this.time < m.flight.landT) return;   // 飛行中不判定出界
-      this._land(m);
-    }
     const p = m.body.translation();
-    if (this._inFunnel(m, p) || this._inTower(m, p)) return;
+    if (this._inFunnel(m, p)) return;
     let best = m.idx, bd = Infinity;
     // 不要往回找到斷開的另一段（漏斗洞口上下）
     const lo = Math.max(0, m.idx - 20, t.segStart[m.idx]), hi = Math.min(t.N - 1, m.idx + 40);
@@ -559,123 +492,12 @@ export class Race {
     return false;
   }
 
-  // ---- 蹺蹺板塔 ----
-  // 每個塔用自己的座標：x＝右手邊、y＝上、z＝往後（跟 trackQuat 一樣）
-  _towerQuat(w, out = new THREE.Quaternion()) {
-    const r = _v.set(w.r[0], 0, w.r[1]), b = new THREE.Vector3(-w.f[0], 0, -w.f[1]);
-    return out.setFromRotationMatrix(new THREE.Matrix4().makeBasis(r.clone(), _yAxis, b));
-  }
-
-  _buildTowers() {
-    // 塔座標裡的一塊固定方塊；qq＝方塊自己的旋轉（塔座標裡），fric＝0 時跟彈珠之間也是 0（不會磨慢）
-    const fixed = (w, q, x, y, z, hx, hy, hz, e = 0.25, qq = null, fric = 0.3) => {
-      const p = new THREE.Vector3(w.c[0] + w.r[0] * x - w.f[0] * z, y, w.c[1] + w.r[1] * x - w.f[1] * z);
-      const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(p.x, p.y, p.z).setRotation(qq ? q.clone().multiply(qq) : q));
-      const d = rest(RAPIER.ColliderDesc.cuboid(hx, hy, hz).setFriction(fric), e);
-      if (!fric) d.setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min);
-      this.world.createCollider(d, body);
-    };
-    for (const w of this.track.towers) {
-      const q = this._towerQuat(w), S = TOWER.slot, g = towerGlass(w);
-      // 前（靠入口，玻璃）、後兩片板子夾出窄槽，左右兩頭再擋起來；前後兩片都光滑，彈珠貼著滾不會被磨慢
-      // 玻璃下半片的頂端只比賽道末端低一點：撞到別顆彈回來的彈珠只會落回賽道再滾進來，不會掉到玻璃外面
-      fixed(w, q, 0, (g.yLo + g.yFront) / 2, S + 0.05, w.span + 0.2, (g.yFront - g.yLo) / 2, 0.05, 0, null, 0);
-      // 玻璃上半部只在賽道進來的地方留一個窗
-      const [g0, g1] = g.span;
-      fixed(w, q, (g0 + g1) / 2, (g.yFront + g.yBack) / 2, S + 0.05, (g1 - g0) / 2, (g.yBack - g.yFront) / 2, 0.05, 0, null, 0);
-      // 後板不反彈：衝進來的彈珠撞到就直直掉到右邊斜板上，不會彈回入口
-      // 正中間底下開一個門洞（洞口），門洞上面那一截照樣擋著
-      const dTop = w.yV + w.doorH, W = w.span + 0.2;
-      for (const sx of [-1, 1]) fixed(w, q, sx * (W + w.door) / 2, (g.yLo + g.yBack) / 2, -S - 0.05, (W - w.door) / 2, (g.yBack - g.yLo) / 2, 0.05, 0, null, 0);
-      fixed(w, q, 0, (dTop + g.yBack) / 2, -S - 0.05, w.door, (g.yBack - dTop) / 2, 0.05, 0, null, 0);
-      // 門洞兩邊是圓柱（跟後板相切）：還沒滑進洞的快彈珠擦過去時被順順地推回槽裡，不會撞到門邊的尖角
-      for (const sx of [-1, 1]) {
-        const p = new THREE.Vector3(w.c[0] + w.r[0] * sx * w.door + w.f[0] * (S + w.jamb), (g.yLo + dTop) / 2, w.c[1] + w.r[1] * sx * w.door + w.f[1] * (S + w.jamb));
-        const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(p.x, p.y, p.z));
-        this.world.createCollider(rest(RAPIER.ColliderDesc.cylinder((dTop - g.yLo) / 2, w.jamb).setFriction(0)
-          .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min), 0), body);
-      }
-      for (const sx of [-1, 1]) fixed(w, q, sx * (w.span + 0.1), (g.yLo + g.yBack) / 2, 0, 0.1, (g.yBack - g.yLo) / 2, S + 0.1, 0.3);
-      // 固定的 V 字：平底＋圓弧＋斜板，整個往後傾斜（板子前後剛好頂到玻璃和後板）
-      const qt = new THREE.Quaternion().setFromAxisAngle(_xAxis, -w.tilt);
-      for (const pk of veePlanks(w)) {
-        const [x, y, z] = veeTilt(w, pk.x, pk.y);
-        fixed(w, q, x, y, z, pk.L / 2, TOWER.plank, veeDepth(w), 0, qt.clone().multiply(_q2.setFromAxisAngle(_zAxis, pk.a)));
-      }
-      // 出口賽道起點後面的擋板：只要擋住剛掉下來往回滾的彈珠，做矮一點（頂端在 V 底下面），玻璃外面才不會多出一個能卡彈珠的平台
-      const t = this.track, i = w.exitI, pos = trackPoint(t, i, 0, 0.6);
-      const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(pos.x, pos.y, pos.z).setRotation(trackQuat(t, i)));
-      this.world.createCollider(rest(RAPIER.ColliderDesc.cuboid(t.half[i] + 1, 1.6, 0.4), 0.15), body);
-    }
-  }
-
-  // 槽裡的彈珠彼此穿過去；離開槽以後，要等跟其他彈珠分開了才恢復碰撞（不然疊在一起的兩顆會被彈飛）
-  _towerPass(m, on) {
-    if (!TOWER.pass || on === !!m.ghost) return;
-    if (!on) {
-      const p = m.body.translation();
-      for (const o of this.marbles) {
-        if (o === m || !o.alive) continue;
-        const q = o.body.translation();
-        if ((q.x - p.x) ** 2 + (q.y - p.y) ** 2 + (q.z - p.z) ** 2 < (2 * RADIUS + 0.05) ** 2) return;
-      }
-    }
-    m.ghost = on;
-    m.collider.setCollisionGroups(on ? TOWER_GHOST : 0xffffffff);
-  }
-
-  // 在蹺蹺板塔裡：進度用高度算，掉到塔底就接回出口賽道
-  _inTower(m, p) {
-    const r = this._inTowerPos(m, p);
-    this._towerPass(m, !!m.tower);
-    return r;
-  }
-
-  _inTowerPos(m, p) {
-    for (const w of this.track.towers) {
-      if (m.idx < w.i0 - 10 || m.idx > w.i1) continue;
-      const dx = (p.x - w.c[0]) * w.r[0] + (p.z - w.c[1]) * w.r[1];
-      const dz = (p.x - w.c[0]) * w.f[0] + (p.z - w.c[1]) * w.f[1];
-      // 槽裡（前後只多留一點點，後面門洞那裡多留洞口的深度）；萬一被彈出槽外，就交回一般的賽道判定（出界會重生，不會永遠卡著）
-      const back = Math.abs(dx) < w.door + 0.6 && p.y < w.yV + w.doorH ? 1.5 : 0.2;
-      const inside = Math.abs(dx) < w.span + 0.5 && dz > -TOWER.slot - 0.2 && dz < TOWER.slot + back && p.y < w.yTop + 3;
-      if (inside && p.y > w.yV - 0.9) {
-        m.tower = w;
-        const frac = Math.min(1, Math.max(0, (w.yTop - p.y) / (w.yTop - w.yExit)));
-        m.idx = Math.max(m.idx, w.i0 + Math.round(frac * (w.i1 - w.i0)));
-        m.s = m.idx * STEP; m.lat = 0; m.h = 0;
-        if (m.s > m.maxS) m.maxS = m.s;
-        m.offTimer = 0;
-        // 卡著不動：往洞口推一下
-        const v = m.body.linvel();
-        if (Math.hypot(v.x, v.y, v.z) < 0.3) {
-          m.stillTimer += DT;
-          if (m.stillTimer > 1) {
-            m.stillTimer = 0;
-            const k = -Math.sign(dx || 1) * 2 * m.body.mass();
-            m.body.applyImpulse({ x: w.r[0] * k, y: 0, z: w.r[1] * k }, true);
-          }
-        } else m.stillTimer = 0;
-        return true;
-      }
-      if (m.tower === w) {
-        m.tower = null;
-        // 只有從塔底掉出去才接到出口；從上面彈出去（彈回入口、跳太高）就照一般方式找位置
-        if (p.y <= w.yV - 0.9) m.idx = w.exitI + Math.round(2 / STEP);
-        else m.idx = Math.min(m.idx, w.i0);
-        return false;
-      }
-    }
-    m.tower = null;
-    return false;
-  }
-
   respawn(m) {
     const t = this.track;
     let i = Math.max(1, m.safeIdx - 8);
     while (i > 1 && !t.floor[i]) i--;
     const lat = (this.rand() * 2 - 1) * 0.3 * t.half[i];
-    const p = trackPoint(t, i, lat, floorHeightAt(lat, t.half[i], t.rise[i], t.pow[i]) + RADIUS + 1.0);
+    const p = trackPoint(t, i, lat, floorHeightAt(lat, t.half[i], t.rise[i]) + RADIUS + 1.0);
     m.body.setTranslation(p, true);
     const tv = t.T[i];
     m.body.setLinvel({ x: tv.x * 7, y: tv.y * 7, z: tv.z * 7 }, true);

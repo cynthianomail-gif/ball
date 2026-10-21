@@ -138,7 +138,6 @@ export function roll(speed, contact) {
 
 export const beep = (f, d) => tone(f, d, { type: 'square', vol: 0.08 });
 export const boing = () => tone(220, 0.25, { type: 'sine', vol: 0.18, slide: 380 });
-export const whoosh = () => tone(900, 0.3, { type: 'sawtooth', vol: 0.05, slide: -760 });
 export const pop = () => { tone(300, 0.2, { type: 'triangle', vol: 0.15, slide: -220 }); tone(160, 0.3, { type: 'sine', vol: 0.12, slide: -100, delay: 0.05 }); };
 export const chime = () => { tone(784, 0.25, { vol: 0.12 }); tone(1175, 0.35, { vol: 0.1, delay: 0.08 }); };
 export const fanfare = () => [523, 659, 784, 1047].forEach((f, k) => tone(f, 0.35, { type: 'triangle', vol: 0.12, delay: k * 0.12 }));

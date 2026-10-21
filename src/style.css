@@ -22,7 +22,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #f3e3c8; col
 .tick { position: absolute; top: -4px; width: 3px; height: 22px; background: #2f7de1; border-radius: 2px; }
 .tick.finish { background: #111; }
 .tick.zone { top: -3px; height: 20px; width: auto; border-radius: 6px; opacity: .85; font-size: 11px; line-height: 20px; text-align: center; overflow: hidden; }
-.tick.cross { background: #f3a19c; } .tick.piston { background: #9edcae; } .tick.pegs { background: #c7b2ec; } .tick.funnel { background: #f7c08a; min-width: 14px; } .tick.zigzag { background: #9cc3f5; } .tick.minifunnel { background: #f9cf9a; min-width: 14px; } .tick.seesaw { background: #b5e3bd; min-width: 14px; } .tick.fork { background: #a6dcd5; min-width: 14px; } .tick.sled { background: #f2b3d3; min-width: 14px; } .tick.water { background: #a9cdf7; min-width: 14px; }
+.tick.cross { background: #f3a19c; } .tick.piston { background: #9edcae; } .tick.pegs { background: #c7b2ec; } .tick.funnel { background: #f7c08a; min-width: 14px; } .tick.zigzag { background: #9cc3f5; } .tick.minifunnel { background: #f9cf9a; min-width: 14px; } .tick.fork { background: #a6dcd5; min-width: 14px; } .tick.water { background: #a9cdf7; min-width: 14px; }
 .dot { position: absolute; z-index: 1; left: 0; top: 3px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; border: 1px solid rgba(0,0,0,.35); }
 .dot.me { top: -3px; width: 18px; height: 18px; margin-left: -9px; border: 3px solid #ffd400; z-index: 2; box-shadow: 0 0 6px #ffd400; }
 #board { position: absolute; right: 14px; top: 14px; margin: 0; padding: 8px 12px; list-style: none; background: rgba(255,255,255,.85); border-radius: 14px; min-width: 150px; font-size: 14px; box-shadow: 0 3px 10px rgba(0,0,0,.15); }

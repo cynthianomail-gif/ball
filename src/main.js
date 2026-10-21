@@ -208,10 +208,6 @@ function handleEvents() {
       case 'go': showMsg('GO!', '', 0.9); sfx.beep(880, 0.35); break;
       case 'hop': if (e.m.id === view.focusMarble().id) sfx.boing(); break;
       case 'hit': hits.push(e); break;
-      case 'shortcut':
-        showMsg('⚡ 抄近路！', `${e.m.name} 被金色積木彈飛了`, 1.8);
-        if (isMine(e.m) || e.m.id === view.focusId) sfx.fanfare(); else sfx.whoosh();
-        break;
       case 'finish':
         if (e.place <= 3) {
           showMsg(e.place === 1 ? `🏆 ${e.m.name} 奪冠！` : `第 ${e.place} 名 ${e.m.name}`, '', 1.6);
@@ -355,7 +351,7 @@ function updateHud() {
 
   // 鏡頭跟的彈珠在哪一關
   const fm = view.focusMarble();
-  const zi = fm.funnel ? track.zones.findIndex(z => z.funnels?.includes(fm.funnel)) : fm.tower ? track.zones.findIndex(z => z.tower === fm.tower) : track.zones.findIndex(z => fm.maxS < z.s1);
+  const zi = fm.funnel ? track.zones.findIndex(z => z.funnels?.includes(fm.funnel)) : track.zones.findIndex(z => fm.maxS < z.s1);
   const z = track.zones[zi];
   setHtml('cpInfo', race.phase === 'countdown' ? '準備起跑…'
     : fm.finished ? `${fm.name} 已抵達終點`
@@ -424,7 +420,7 @@ function frame(now) {
   if (phase !== 'betting') { updateHud(); updateTags(); }
   // 滾動聲跟著鏡頭跟隨的彈珠
   const fm = phase === 'betting' ? null : view.focusMarble();
-  if (fm) { const v = fm.body.linvel(); sfx.roll(Math.hypot(v.x, v.y, v.z), fm.grounded && !fm.flight && race.phase === 'race'); }
+  if (fm) { const v = fm.body.linvel(); sfx.roll(Math.hypot(v.x, v.y, v.z), fm.grounded && race.phase === 'race'); }
   else sfx.roll(0, false);
 
   if (showFps && (fpsTimer -= dt) < 0) {
