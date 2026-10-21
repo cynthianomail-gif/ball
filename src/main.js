@@ -207,13 +207,7 @@ function handleEvents() {
     switch (e.type) {
       case 'go': showMsg('GO!', '', 0.9); sfx.beep(880, 0.35); break;
       case 'hop': if (e.m.id === view.focusMarble().id) sfx.boing(); break;
-      case 'hit': {
-        // 越近鏡頭越大聲，遠的幾乎聽不到
-        const att = 1 / (1 + view.camera.position.distanceToSquared(e.m.body.translation()) / 300);
-        sfx.hit(e.strength / 14 * att, e.glass);
-        if (e.strength > 9 && e.m.id === view.focusMarble().id) view.shakeAmt = Math.min(0.5, view.shakeAmt + e.strength * 0.02);
-        break;
-      }
+      case 'hit': hits.push(e); break;
       case 'shortcut':
         showMsg('⚡ 抄近路！', `${e.m.name} 被金色積木彈飛了`, 1.8);
         if (isMine(e.m) || e.m.id === view.focusId) sfx.fanfare(); else sfx.whoosh();
@@ -227,6 +221,40 @@ function handleEvents() {
     }
   }
   race.events.length = 0;
+}
+
+// 撞擊聲：離鏡頭跟隨的彈珠越遠越小聲，畫面外又離得遠的不播；每幀只挑最響的 3 個（同時太多會糊成一團）
+// 左右聲像看撞擊點在鏡頭的左邊還右邊。碰撞不晃鏡頭，只有跟隨的彈珠重重落地時輕晃一下
+const hits = [];
+function playHits() {
+  if (!hits.length) return;
+  const fm = view.focusMarble(), f = fm.body.translation(), cam = view.camera.position, rx = view.camera.matrixWorld.elements;
+  const list = [];
+  for (const e of hits) {
+    const mine = e.m === fm || e.o === fm;
+    const d = Math.hypot(e.x - f.x, e.y - f.y, e.z - f.z);
+    if (!mine && d > 22) continue;
+    if (!mine && d > 3.5) {
+      const s = view.project(e);
+      if (!s.visible || s.x < -0.03 * innerWidth || s.x > 1.03 * innerWidth || s.y < -0.03 * innerHeight || s.y > 1.03 * innerHeight) continue;
+    }
+    const dc = Math.hypot(e.x - cam.x, e.y - cam.y, e.z - cam.z);
+    list.push({
+      e, mine,
+      v: mine ? Math.min(1, e.k * 1.25) : e.k * Math.pow(1 - d / 22, 1.6),
+      pan: ((e.x - cam.x) * rx[0] + (e.y - cam.y) * rx[1] + (e.z - cam.z) * rx[2]) / Math.max(4, dc),
+    });
+  }
+  hits.length = 0;
+  list.sort((a, b) => b.v - a.v);
+  for (const h of list.slice(0, 3)) {
+    if (h.e.kind === 'glass') sfx.clack(h.v, h.pan);
+    else if (h.e.kind === 'wall') sfx.knock(h.v, h.pan);
+    else {
+      sfx.land(h.v, h.pan);
+      if (h.mine && h.v > 0.6) view.shakeAmt = Math.max(view.shakeAmt, 0.15);
+    }
+  }
 }
 
 // 前三名都過終點就結算（拖太久就照目前名次算）
@@ -385,6 +413,7 @@ function frame(now) {
       acc -= DT; n++;
     }
     if (n === MAX_STEPS) acc = 0;
+    playHits();
     checkSettle();
   } else {
     // 下注時鏡頭在起跑線上方慢慢繞

@@ -14,7 +14,7 @@ const FLOOR_SEGS = 16;
 //       R 回程直線(長度, 坡度)：U 字迴轉後的直線，金色積木抄近路的落點
 //       F 漏斗(半徑, 深度, 洞口下方落差)：從邊緣切進去，繞圈掉進中間的洞，落到下面的賽道
 //       H 連發夾彎(彎數, 每段長, 彎道半徑, 坡度)：窄窄的木頭溝槽來回 180 度急轉
-//       W 蹺蹺板塔(個數, 上下間距)：掉進直立的窄槽，蹺蹺板左右交錯往下，最後掉回賽道
+//       W V 字槽(半寬, 斜板角度)：賽道末端掉進一個固定的 V 字窄槽，左右來回滾到慢下來，從底部中間的洞掉回下面的賽道
 // 坡度為每單位長度下降量
 // 小漏斗：入口是一條剛好一顆寬的窄槽，牆矮，入口前 5 單位收窄
 const MINI = { lane: 0.8, margin: 0.5, wall: 1.3, taper: 5, group: 'minifunnel' };
@@ -31,20 +31,22 @@ const PROGRAM = [
   ['F', 3.6, 2.4, 2.4, MINI],
   ['S', 11, 0.12],
   ['F', 3.6, 2.4, 2.4, MINI],
-  ['S', 6, 0.06],
+  ['Z', 'fork', 38, 0.12],    // 障礙區 4：分岔匯流（中間一座水滴形的島，左右兩道再收進頸部）
   ['T', 90, 16, 0.07],
-  ['Z', 'cross', 50, 0.08],   // 障礙區 4：旋轉十字
+  ['Z', 'cross', 50, 0.08],   // 障礙區 5：旋轉十字
   ['T', -180, 16, 0.08],      // 急彎直接接下一關
-  ['Z', 'piston', 44, 0.06],  // 障礙區 5：跳跳積木
+  ['Z', 'piston', 44, 0.06],  // 障礙區 6：跳跳積木
   ['S', 6, 0.06],
   ['T', 180, 14, 0.07],       // U 字迴轉
   ['R', 50, 0.05],            // 回程直線：金色積木抄近路會落在這裡
   ['T', -90, 16, 0.07],
-  ['Z', 'pegs', 46, 0.2],     // 障礙區 6：彈珠台（比較陡）
+  ['Z', 'swing', 48, 0.07],   // 障礙區 7：波浪半管（賽道左右交替傾斜，彈珠來回擺盪）
+  ['Z', 'pegs', 46, 0.2],     // 障礙區 8：彈珠台（比較陡）
   ['T', -45, 16, 0.06],
   ['S', 8, 0.05],
-  ['W', 6, 0.5],               // 障礙區 7：V 字槽，左右左右來回滾，慢下來才從底部的洞掉下去
-  ['S', 6, 0.04],
+  ['W', 8, 0.75],              // 障礙區 9：V 字槽（半寬、斜板角度），左右左右來回滾，慢下來才從底部中間的洞掉下去
+  ['S', 4, 0.04],
+  ['Z', 'water', 24, 0.12],    // 障礙區 10：水底隧道（水箱罩住賽道，彈珠變慢，拉近終點前的差距）
   ['S', 40, 0.0],       // 終點（最後 30 是收集區）
 ];
 
@@ -56,14 +58,59 @@ export const ZONE_INFO = {
   zigzag: { name: '十連發夾彎', icon: '🔁' },
   minifunnel: { name: '連續小漏斗', icon: '🥣' },
   seesaw: { name: '蹺蹺板', icon: '⚖️' },
+  fork: { name: '分岔匯流', icon: '🔀' },
+  swing: { name: '波浪半管', icon: '🛹' },
+  water: { name: '水底隧道', icon: '🌊' },
 };
 export const FUNNEL_HOLE = 1.1;        // 洞口半徑：比兩顆並排（直徑 2）再大一點，才不會兩顆互卡堵住
 export const ZIGZAG_LANE = 0.7;        // 夾彎溝槽的半寬：剛好放得下一顆彈珠（直徑 1），只能排成一列
 const ZIGZAG_BANK = 0.5;              // 夾彎彎道的傾斜角（弧度）
 const ZIGZAG_WALL = 1.1;              // 夾彎溝槽的牆高（從溝底算，彈珠直徑 1）
 const ZIGZAG_TALL = 22;               // 夾彎開頭這麼長的一段牆還是高的
-export const TOWER_LANE = 1.0;         // 進蹺蹺板塔前賽道收窄到這個半寬（塔裡的槽寬 1.6）
-export const VEE_HOLE = 0.62;          // V 字槽底部洞口的半寬（洞比彈珠直徑 1 寬一點）
+export const TOWER_LANE = 1.0;         // 進 V 字槽前賽道收窄到這個半寬（玻璃上的入口窗也是這個寬度）
+// V 字槽：底是連續的（平底 → 圓弧 → 斜板），整個 V 的板面往後板那邊微微傾斜，彈珠滾的時候貼著後板
+// 洞開在 V 底正中間、後板那一側（後板在那裡開一個門洞，門洞下面就是空的）：
+// 滾得快的彈珠一下子就經過門洞，來不及往後滑進去；越滾越慢，慢到一定程度就會往後滑進洞裡掉下去
+export const VEE = {
+  flat: 0.6,      // 平底的半寬（比門洞窄：慢下來的彈珠一定會滑到門洞前面，不會停在平底上）
+  round: 4,       // 平底接斜板的圓弧半徑
+  drop: 0.6,      // 賽道末端比底下斜板高多少（彈珠撞後板後掉下去的高度）
+  front: 0.76,    // 賽道末端到 V 中心面的距離：剛好頂到前面玻璃外側（sim.js TOWER.slot + 0.1），中間沒有縫
+  tilt: 0.07,     // 板面往後傾斜的角度（弧度）
+  door: 2.1,      // 後板門洞（洞口）的半寬（夠寬，三顆並排也搭不成拱橋卡住）
+  jamb: 0.8,      // 門洞兩邊圓柱的半徑
+  doorH: 1.4,     // 門洞的高度（從平底量）
+};
+
+// V 字槽剖面：離中線 x（取絕對值）處的板面高度，以平底中線為 0（不含往後的傾斜）
+export function veeHeight(w, x) {
+  const ax = Math.abs(x), xa = w.flat + w.round * Math.sin(w.slope);
+  if (ax <= w.flat) return 0;
+  if (ax <= xa) { const s = (ax - w.flat) / w.round; return w.round * (1 - Math.sqrt(1 - s * s)); }
+  return w.round * (1 - Math.cos(w.slope)) + (ax - xa) * Math.tan(w.slope);
+}
+
+// 右半邊的板面折線：[[x, 高度], ...]，從中線到右邊擋板；圓弧每段約 3 度
+export function veeOutline(w) {
+  const pts = [[0, 0], [w.flat, 0]];
+  const n = Math.max(2, Math.ceil(w.slope / 0.05));
+  for (let k = 1; k <= n; k++) { const a = w.slope * k / n; pts.push([w.flat + w.round * Math.sin(a), w.round * (1 - Math.cos(a))]); }
+  pts.push([w.span, veeHeight(w, w.span)]);
+  return pts;
+}
+// 分岔匯流：賽道中間一座靜態的水滴形島（鼻 → 身 → 尾），把賽道分成左右對稱兩道，尾巴之後收進頸部再放寬
+// lead 區頭到鼻尖多遠、nose／body／tail 島三段的長度、hw 島的半寬、hh 島高、tip 鼻尖和尾尖的半寬（不做成刀鋒）
+// outer 島兩側的賽道半寬（每道淨寬 outer - hw）、neck 頸部半寬（全寬 3.2 ≥ 三顆並排）、neckLen 頸部長度、ease 收窄與放寬各用多長
+export const FORK = { lead: 10, nose: 6, body: 12, tail: 6, hw: 1.0, hh: 2.0, tip: 0.15, outer: 3.4, neck: 1.6, neckLen: 3, ease: 6 };
+// 島在離鼻尖 s 處的半寬：鼻是橢圓（圓圓的頭）、身一樣寬、尾巴直線收尖
+export function forkHalf(s) {
+  const F = FORK;
+  if (s <= F.nose) return F.tip + (F.hw - F.tip) * Math.sqrt(1 - (1 - s / F.nose) ** 2);
+  if (s <= F.nose + F.body) return F.hw;
+  return THREE.MathUtils.lerp(F.hw, F.tip, Math.min(1, (s - F.nose - F.body) / F.tail));
+}
+// 波浪半管：區內賽道左右交替傾斜（amp 最大傾角、period 一個來回多長）、地板兩側抬高到 rise，頭尾各 ramp 單位平滑過渡
+export const SWING = { amp: 0.22, period: 32, rise: 1.8, ramp: 6 };
 export const FUNNEL_LANE = 3.5;        // 進漏斗前賽道縮到這個半寬
 
 // 漏斗剖面：r 從洞口到邊緣，回傳往下的深度（0～1）。一半直線一半雙曲線，越靠中間越陡
@@ -78,7 +125,7 @@ export const PISTON_COLS = 4;      // 跳跳積木一列幾塊
 export const PISTON_ROW = 2.9;     // 跳跳積木每列間隔（積木前後長 2.8）
 const SHORTCUT_AHEAD = -8;        // 落點在回程直線上、積木正對面再往前多遠（負的＝往回一點）
 
-const START = new THREE.Vector3(-105, 110, 95);
+const START = new THREE.Vector3(-105, 120.5, 95);
 const START_HEADING = 0; // 朝 +x
 
 export function mulberry32(seed) {
@@ -166,9 +213,9 @@ export function buildTrack(seed = 7) {
       const i0 = xs.length - 1;
       const f = [Math.cos(h), -Math.sin(h)], r = [Math.sin(h), Math.cos(h)];   // 前進方向、右手邊
       const entryX = span - 0.8;                // 從右邊翅膀的高處進來
-      const cx = x + f[0] * 1.0 - r[0] * entryX, cz = z + f[1] * 1.0 - r[1] * entryX;
-      const yTop = y, tanA = Math.tan(slope);
-      const yV = yTop - 1.0 - (entryX - VEE_HOLE) * tanA;    // 洞口（V 底）的高度
+      const cx = x + f[0] * VEE.front - r[0] * entryX, cz = z + f[1] * VEE.front - r[1] * entryX;
+      const yTop = y, shape = { ...VEE, span, slope };
+      const yV = yTop - VEE.drop - veeHeight(shape, entryX);    // V 平底（中線）的高度
       const yExit = yV - 3;
       // V 字槽裡沒有賽道：一條往下的線當進度參考
       const x0 = x, z0 = z, y0 = y, n = Math.round((y0 - yExit) / STEP);
@@ -177,7 +224,7 @@ export function buildTrack(seed = 7) {
       breaks.add(i1);
       x = cx - f[0] * 2; z = cz - f[1] * 2; y = yExit;
       push(0);
-      towers.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], f, r, span, slope, yV, yTop, yExit, entryX });
+      towers.push({ ...shape, i0, i1, exitI: i1 + 1, c: [cx, cz], f, r, yV, yTop, yExit, entryX, lane: TOWER_LANE });
       zoneRanges.push({ type: 'seesaw', i0, i1 });
     } else if (cmd[0] === 'H') {
       // 一段直、一個 180 度急彎，左彎右彎輪流，整串往左手邊前進
@@ -238,16 +285,26 @@ export function buildTrack(seed = 7) {
     const raw = curv.slice(z.i0, z.i1 + 1).map(k => THREE.MathUtils.clamp(k * 11, -ZIGZAG_BANK, ZIGZAG_BANK));
     smooth(raw, 3, 2).forEach((b, k) => { bank[z.i0 + k] = b; });
   }
+  // 波浪半管：傾斜角用正弦左右交替，頭尾各 ramp 單位平滑接回原本的傾斜（地板抬高也用同一個 swingEase）
+  const swingEase = (z, i) => { const n = Math.round(SWING.ramp / STEP), k = Math.min(1, (i - z.i0) / n, (z.i1 - i) / n); return k * k * (3 - 2 * k); };
+  for (const z of zoneRanges) if (z.type === 'swing') {
+    for (let i = z.i0; i <= z.i1; i++) {
+      const e = swingEase(z, i);
+      bank[i] = bank[i] * (1 - e) + SWING.amp * e * Math.sin(2 * Math.PI * (i - z.i0) * STEP / SWING.period);
+    }
+  }
 
   // 2. 寬度
   const total = (N - 1) * STEP;
   const half = new Float32Array(N);
+  // 終點前的放寬從水底隧道出口才開始（水箱要一樣寬）
+  const wideAt = Math.max(total - 46, ...zoneRanges.filter(z => z.type === 'water').map(z => z.i1 * STEP));
   for (let i = 0; i < N; i++) {
     const s = i * STEP;
     let w = 5.5;
     if (s < 34) w = 8.2;
     else if (s < 52) w = THREE.MathUtils.lerp(8.2, 5.5, (s - 34) / 18);
-    if (s > total - 46) w = THREE.MathUtils.lerp(5.5, 8.5, Math.min(1, (s - (total - 46)) / 12));
+    if (s > wideAt) w = THREE.MathUtils.lerp(5.5, 8.5, Math.min(1, (s - wideAt) / 12));
     half[i] = w;
   }
   // 夾彎溝槽變窄（前後 10 單位慢慢收窄、放寬，彈珠才會乖乖排成一列進去），牆也變矮，像木板上挖出來的溝
@@ -272,6 +329,19 @@ export function buildTrack(seed = 7) {
     for (let k = 0; k <= n; k++) half[w.i0 - k] = Math.min(half[w.i0 - k], THREE.MathUtils.lerp(TOWER_LANE, 5.5, k / n));
     for (let i = w.i0 + 1; i <= w.i1; i++) half[i] = 4;
   }
+  // 分岔匯流：進島前收窄到 outer、尾巴之後收進頸部、再放寬回原本的寬度（左右對稱，每段至少 ease 單位長）
+  for (const z of zoneRanges) if (z.type === 'fork') {
+    const F = FORK, d1 = F.lead + F.nose + F.body, d2 = d1 + F.tail, d3 = d2 + F.neckLen;
+    for (let i = z.i0 + Math.round((F.lead - F.ease) / STEP); i <= z.i0 + Math.round((d3 + F.ease) / STEP); i++) {
+      const d = (i - z.i0) * STEP, base = half[i];
+      const w = d < F.lead ? THREE.MathUtils.lerp(base, F.outer, (d - (F.lead - F.ease)) / F.ease)
+        : d < d1 ? F.outer
+        : d < d2 ? THREE.MathUtils.lerp(F.outer, F.neck, (d - d1) / F.tail)
+        : d < d3 ? F.neck
+        : THREE.MathUtils.lerp(F.neck, base, (d - d3) / F.ease);
+      half[i] = Math.min(base, w);
+    }
+  }
 
   // 跳跳積木那段地板幾乎是平的，四塊積木才能鋪滿整個跑道寬
   const rise = new Float32Array(N).fill(EDGE_RISE);
@@ -281,6 +351,10 @@ export function buildTrack(seed = 7) {
       const k = Math.min(1, Math.max(0, (z.i0 - i) / n, (i - z.i1) / n));
       rise[i] = THREE.MathUtils.lerp(PISTON_RISE, EDGE_RISE, k);
     }
+  }
+  // 波浪半管兩側地板抬高，彈珠擺過去會被弧面推回來
+  for (const z of zoneRanges) if (z.type === 'swing') {
+    for (let i = z.i0; i <= z.i1; i++) rise[i] = THREE.MathUtils.lerp(EDGE_RISE, SWING.rise, swingEase(z, i));
   }
 
   // 3. 座標系
@@ -336,8 +410,11 @@ export function buildTrack(seed = 7) {
     if (z.type === 'funnel') return { ...z, s0: z.i0 * STEP, s1: z.i1 * STEP, crosses: [], pistons: [], pegs: [], funnels: funnels.filter(f => f.i0 === z.i0) };
     const len = (z.i1 - z.i0) * STEP;
     const at = d => z.i0 + Math.round(d / STEP);
-    const zone = { ...z, s0: z.i0 * STEP, s1: z.i1 * STEP, crosses: [], pistons: [], pegs: [] };
-    if (z.type === 'cross') {
+    const zone = { ...z, s0: z.i0 * STEP, s1: z.i1 * STEP, crosses: [], pistons: [], pegs: [], islands: [] };
+    if (z.type === 'fork') {
+      // 一座島，鼻尖在 lead 處；sim 和畫面都從 FORK 的尺寸長出同一座島
+      zone.islands.push({ i0: at(FORK.lead), len: FORK.nose + FORK.body + FORK.tail });
+    } else if (z.type === 'cross') {
       // 三座十字旋轉門，轉向交錯
       for (let k = 0; k < 3; k++) zone.crosses.push({ i: at(10 + k * 15), speed: (k % 2 ? -1 : 1) * (1.6 + rand() * 0.3), angle: rand() * Math.PI });
     } else if (z.type === 'piston') {
