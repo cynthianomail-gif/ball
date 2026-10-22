@@ -18,6 +18,10 @@ const PISTON_PHASE_COL = [0, Math.PI / 2, Math.PI, Math.PI * 1.5];
 // 在水裡阻尼加大到 damp、浮力把重力減掉 buoy 倍；入口 ease 單位內漸變，離開恢復原阻尼 BASE_DAMP
 export const WATER = { damp: 0.33, buoy: 0.45, ease: 3 };
 const BASE_DAMP = 0.12;
+// 漏斗：裡面的阻尼比平地大（每個漏斗自己的 damp），彈珠才會一圈圈慢慢繞進洞，不是一衝就掉下去
+// check 秒內幾乎沒動、速度又很小＝卡住，輕推一下；洞口 mouth 範圍內擠了 2 顆以上、jam 秒沒有彈珠掉出去＝塞住，
+// 敲一下（往上 tapUp、往旁邊 tapSide 的速度）；push 是入口滑槽上調速的最大加速度
+export const FUNNEL = { check: 1.0, mouth: 1.8, jam: 0.5, tapUp: 3.5, tapSide: 2.5, tapGrow: 0.5, tapMax: 3, push: 12 };
 // 出界救援（像雲上釣魚人）：等一下 → 手抓著彈珠從高處降下 → 在跑道上停一下 → 放手 → 手收回
 // 單位是秒；height＝手降下前的高度；drop＝放手時彈珠離地的空隙；speed＝放手後沿賽道的初速；holdMax＝落點被擋時最多多等幾秒
 export const RESCUE = { wait: 0.35, down: 0.75, hold: 0.2, up: 0.7, height: 10, drop: 0.3, speed: 7, holdMax: 0.6 };
@@ -75,6 +79,8 @@ export class Race {
     this.events = [];
     this.finishOrder = [];
     this.elimOrder = [];
+    this.fPass = track.funnels.map(() => 0);   // 各漏斗最近一次有彈珠掉出洞口的時間
+    this.fTaps = track.funnels.map(() => 0);   // 各漏斗從那次起連續敲了幾下
     this.touching = new Set();   // 正碰在一起的彈珠對（互撞只在剛碰上時響一聲）
 
     const world = this.world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
@@ -90,8 +96,8 @@ export class Race {
     this._wall(track.startI + 1, 0.5);
     this._wall(track.endI - 1, 0.5);
     this.gate = this._wall(track.gateI, 0.3);
-    // 漏斗洞口下方的出口賽道後面加一道擋板，接住掉下來的彈珠
-    for (const f of track.funnels) this._wall(f.exitI, 0.4);
+    // 漏斗洞口下方的出口賽道後面加一道擋板，接住掉下來的彈珠（頂端要比洞口低，不然會頂進漏斗的錐面，彈珠就停在上面）
+    for (const f of track.funnels) this._wall(f.exitI, 0.4, Math.min(WALL_H, (f.yHole - track.P[f.exitI].y - 0.6) / 1.5));
 
     // 障礙區
     this.crosses = [];
@@ -192,7 +198,7 @@ export class Race {
         pattern: n % 6,
         body, collider, alive: true, finished: false, place: 0,
         row: r, idx: i, s, lat, h: 0, maxS: s, cp: 0, safeIdx: i, offTimer: 0, respawns: 0, rescue: null,
-        grounded: false, dashCd: 0, hitCd: 0, pv: { x: 0, y: 0, z: 0 }, stillTimer: 0, funnel: null,
+        grounded: false, dashCd: 0, hitCd: 0, pv: { x: 0, y: 0, z: 0 }, stillTimer: 0, tapN: 0, funnel: null, funnelT: 0, fRef: null, damp: BASE_DAMP,
         stats: baseStats(), upgrades: [], elimT: 0, rank: n + 1,
         input: { x: 0, z: 0, dash: false },
         ai: (isPlayer && !autopilot) ? null : this._makeAI(),
@@ -219,12 +225,12 @@ export class Race {
     };
   }
 
-  _wall(i, thick) {
+  _wall(i, thick, hh = WALL_H) {
     const t = this.track;
-    const pos = trackPoint(t, i, 0, WALL_H / 2);
+    const pos = trackPoint(t, i, 0, hh / 2);
     const q = trackQuat(t, i);
     const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(pos.x, pos.y, pos.z).setRotation(q));
-    return this.world.createCollider(rest(RAPIER.ColliderDesc.cuboid(t.half[i] + 1, WALL_H, thick), 0.15), body);
+    return this.world.createCollider(rest(RAPIER.ColliderDesc.cuboid(t.half[i] + 1, hh, thick), 0.15), body);
   }
 
   start() {
@@ -259,19 +265,25 @@ export class Race {
         if (m.rescue?.held) continue;   // 被手抓著：不碰撞、不受控
       }
       this._sense(m);
-      if (this.phase === 'race' && !m.finished && !m.funnel) {
-        // 彈珠台、夾彎裡完全交給重力（AI 的防側滑會把自己頂在釘子或牆上）
-        const free = this.freeZones.some(z => m.s > z.s0 - 1 && m.s < z.s1);
-        if (m.ai && !free) this._think(m, dt);
-        if (!free) this._control(m, dt);
-        else this._unstick(m, dt);
+      if (this.phase === 'race' && !m.finished && !this._inBowl(m)) {
+        const ap = this._approach(m);
+        if (ap) this._approachPush(m, ap, dt);
+        else {
+          // 彈珠台、夾彎裡完全交給重力（AI 的防側滑會把自己頂在釘子或牆上）
+          const free = this.freeZones.some(z => m.s > z.s0 - 1 && m.s < z.s1);
+          if (m.ai && !free) this._think(m, dt);
+          if (!free) this._control(m, dt);
+          else this._unstick(m, dt);
+        }
       }
       this._water(m);
+      this._funnelDamp(m);
     }
 
     this.world.step();
 
     this._clacks();
+    this._funnelJam();
     for (const m of this.marbles) {
       if (!m.alive || m.rescue?.held) continue;
       this._impact(m);
@@ -366,6 +378,37 @@ export class Race {
     }
   }
 
+  // 在漏斗的碗裡（比邊牆頂低）：不靠 AI，只靠重力和繞圈。還在上方入口滑槽上的不算
+  _inBowl(m) {
+    const f = m.funnel;
+    return !!f && m.body.translation().y < f.yRim + f.wallH + 0.5;
+  }
+
+  // 正在漏斗入口前的滑槽上（含伸到漏斗上方那段）就回傳那個漏斗
+  _approach(m) {
+    if (m.funnel) return m.funnel;
+    for (const f of this.track.funnels) if (f.coast && m.s > f.i0 * STEP - f.coast && m.s < f.i0 * STEP + 1) return f;
+    return null;
+  }
+
+  // 入口滑槽上不用 AI，沿滑槽把速度調到 coastV：太快會飛出漏斗的牆外，
+  // 太慢會卡在滑槽收窄的地方、擋住後面的（加速、減速最多 FUNNEL.push）。
+  // 幾顆擠在收窄的地方互相頂住（拱）一動也不動：先放掉推力讓它鬆開，再彈起來換個位置，彈了還卡就彈重一點
+  _approachPush(m, f, dt) {
+    if (!f.coastV) return;
+    const v = m.body.linvel(), t = this.track.T[f.i0], k = m.body.mass();
+    if (Math.hypot(v.x, v.y, v.z) > 0.5) { m.stillTimer = 0; m.tapN = 0; }
+    else m.stillTimer += dt;
+    if (m.stillTimer < FUNNEL.check * 0.3) {
+      const a = Math.max(-FUNNEL.push, Math.min(FUNNEL.push, (f.coastV - (v.x * t.x + v.z * t.z)) * 4));
+      m.body.applyImpulse({ x: t.x * a * k * dt, y: 0, z: t.z * a * k * dt }, true);
+    }
+    if (m.stillTimer < FUNNEL.check) return;
+    m.stillTimer = 0;
+    const power = Math.min(FUNNEL.tapMax, 1 + FUNNEL.tapGrow * m.tapN++), ang = this.rand() * Math.PI * 2;
+    m.body.applyImpulse({ x: Math.cos(ang) * FUNNEL.tapSide * power * k, y: FUNNEL.tapUp * power * k, z: Math.sin(ang) * FUNNEL.tapSide * power * k }, true);
+  }
+
   // 彈珠台裡沒有 AI：停在釘子正後方不動時，往旁邊隨機推一下
   _unstick(m, dt) {
     const v = m.body.linvel();
@@ -391,6 +434,42 @@ export class Race {
     m.wet = k > 0.5;
     m.body.setLinearDamping(BASE_DAMP + (WATER.damp - BASE_DAMP) * k);
     if (k) m.body.applyImpulse({ x: 0, y: m.body.mass() * GRAVITY * WATER.buoy * k * DT, z: 0 }, true);
+  }
+
+  // 洞口塞住（兩顆跨在洞口互相頂住的拱）：洞口附近擠了 2 顆以上，而且一陣子沒有彈珠掉出去，
+  // 就像敲一下漏斗——洞口附近的彈珠各自被往上、往旁邊彈一下，拱就散了
+  _funnelJam() {
+    const t = this.track;
+    for (let k = 0; k < t.funnels.length; k++) {
+      const f = t.funnels[k], near = [];
+      for (const m of this.marbles) {
+        if (m.funnel !== f || m.rescue) continue;
+        const p = m.body.translation();
+        // 已經掉到洞口平面以下的不敲（敲了會被甩到錐面底下飛出去）
+        if (Math.hypot(p.x - f.c[0], p.z - f.c[1]) < FUNNEL.mouth && p.y > f.yHole + 0.2 && p.y < f.yHole + 2) near.push(m);
+      }
+      if (near.length < 2) { this.fPass[k] = this.time; this.fTaps[k] = 0; continue; }
+      if (this.time - this.fPass[k] < FUNNEL.jam) continue;
+      this.fPass[k] = this.time - FUNNEL.jam + 0.6;
+      const power = Math.min(FUNNEL.tapMax, 1 + FUNNEL.tapGrow * this.fTaps[k]++);   // 敲了還塞著就敲重一點
+      for (const m of near) {
+        const a = this.rand() * Math.PI * 2, s = FUNNEL.tapSide * power, w = m.body.mass();
+        m.body.applyImpulse({ x: Math.cos(a) * s * w, y: FUNNEL.tapUp * power * w, z: Math.sin(a) * s * w }, true);
+      }
+    }
+  }
+
+  // 漏斗裡的阻尼：進了碗裡就換成漏斗的（離洞口 0.35 倍半徑內再加 dampIn，越靠近洞口越多），出來恢復。
+  // 還在上方入口滑槽上的不算，不然在滑槽末端會慢到停住，擋住後面的
+  _funnelDamp(m) {
+    let d = BASE_DAMP;
+    if (this._inBowl(m)) {
+      const f = m.funnel, p = m.body.translation();
+      d = f.damp + f.dampIn * (1 - Math.min(1, Math.hypot(p.x - f.c[0], p.z - f.c[1]) / (f.R * 0.35)));
+    }
+    if (d === m.damp) return;
+    m.damp = d;
+    m.body.setLinearDamping(d);
   }
 
   // 積木頂面 = base + 0～lift，用 1-cos 讓升降平滑
@@ -460,41 +539,49 @@ export class Race {
     if (m.offTimer > 0.6 || m.h < -15) this._startRescue(m);
   }
 
-  // 在漏斗裡：不靠 AI，只靠重力和邊緣繞圈；進度用「離洞口多近」來算
+  // 在漏斗裡：不靠 AI，只靠重力和邊緣繞圈；進度用「離洞口多近」來算（入口滑槽伸到漏斗上方的那段也算在裡面）
   _inFunnel(m, p) {
     const t = this.track;
-    for (const f of t.funnels) {
+    for (let k = 0; k < t.funnels.length; k++) {
+      const f = t.funnels[k];
       // 已經滑到這個漏斗的入口末端才算（連續小漏斗時，上一個漏斗的出口就在下一個的正上方）
       if (m.funnel !== f && (m.idx < f.i0 - 2 || m.idx > f.i1)) continue;
       const r = Math.hypot(p.x - f.c[0], p.z - f.c[1]);
       if (r < f.R + 0.5 && p.y > f.yHole - 1.2 && p.y < f.yRim + f.wallH + 3) {
-        m.funnel = f;
+        if (m.funnel !== f) { m.funnel = f; m.funnelT = 0; m.fRef = null; }
+        m.funnelT += DT;
         const frac = Math.min(1, Math.max(0, (f.R - r) / (f.R - FUNNEL_HOLE)));
         m.idx = Math.max(m.idx, f.i0 + Math.round(frac * (f.i1 - f.i0)));
         m.s = m.idx * STEP; m.lat = 0; m.h = 0;
         if (m.s > m.maxS) m.maxS = m.s;
         m.offTimer = 0;
-        // 卡在洞口附近不動（被別顆壓住）：往中間、往下輕輕推一下
-        const v = m.body.linvel();
-        if (Math.hypot(v.x, v.y, v.z) < 0.4) {
-          m.stillTimer += DT;
-          if (m.stillTimer > 0.8) {
-            m.stillTimer = 0;
-            const k = m.body.mass() * 1.5, dx = (f.c[0] - p.x) / (r || 1), dz = (f.c[1] - p.z) / (r || 1);
-            m.body.applyImpulse({ x: dx * k + (this.rand() - 0.5) * k, y: -k, z: dz * k + (this.rand() - 0.5) * k }, true);
-          }
-        } else m.stillTimer = 0;
+        if (this._inBowl(m)) this._funnelUnstick(m, f, p, r);
         return true;
       }
       if (m.funnel === f && p.y <= f.yHole - 1.2) {
         // 從洞口掉下去了：接到出口賽道
         m.funnel = null;
+        this.fPass[k] = this.time; this.fTaps[k] = 0;
         m.idx = f.exitI + Math.round(2 / STEP);
         return false;
       }
     }
     m.funnel = null;
     return false;
+  }
+
+  // 漏斗裡卡住：每 FUNNEL.check 秒看一次，這段時間幾乎沒移動、速度又很小（速度忽快忽慢重不了這個判斷），
+  // 就往洞口的方向推一下：往內加順著繞圈的切線方向，再往下一點，不會把彈珠推出漏斗；推了還不動就推重一點
+  _funnelUnstick(m, f, p, r) {
+    const ref = m.fRef;
+    if (!ref) { m.fRef = { x: p.x, y: p.y, z: p.z, t: m.funnelT, n: 0 }; return; }
+    if (m.funnelT - ref.t < FUNNEL.check) return;
+    const v = m.body.linvel(), moved = Math.hypot(p.x - ref.x, p.y - ref.y, p.z - ref.z);
+    ref.x = p.x; ref.y = p.y; ref.z = p.z; ref.t = m.funnelT;
+    if (moved > 0.5 || Math.hypot(v.x, v.y, v.z) > 1.5) { ref.n = 0; return; }
+    const k = m.body.mass() * Math.min(FUNNEL.tapMax, 1 + FUNNEL.tapGrow * ref.n++), ix = (f.c[0] - p.x) / (r || 1), iz = (f.c[1] - p.z) / (r || 1);
+    const spin = (-iz * v.x + ix * v.z) >= 0 ? 1 : -1;   // 沿著原本繞的方向
+    m.body.applyImpulse({ x: (ix * 2 - iz * spin * 1.5) * k, y: -k, z: (iz * 2 + ix * spin * 1.5) * k }, true);
   }
 
   // 出界：選好放回的位置，彈珠停用物理交給手（m.rescue）。x y z＝手與彈珠此刻的位置，sway＝晃動幅度 0～1，

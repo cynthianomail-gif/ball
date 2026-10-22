@@ -11,16 +11,23 @@ const FLOOR_SEGS = 16;
 
 // 指令：S 直線(長度, 坡度)  T 轉彎(角度, 半徑, 坡度，正=左轉)
 //       Z 障礙區(種類, 長度, 坡度)：直線上放一整區障礙
-//       F 漏斗(半徑, 深度, 洞口下方落差)：從邊緣切進去，繞圈掉進中間的洞，落到下面的賽道
+//       F 漏斗(半徑, 深度, 洞口下方落差, 選項)：從邊緣切進去，繞圈掉進中間的洞，落到下面的賽道
 //       H 連發夾彎(彎數, 每段長, 彎道半徑, 坡度)：窄窄的木頭溝槽來回 180 度急轉
 // 坡度為每單位長度下降量
-// 小漏斗：入口是一條剛好一顆寬的窄槽，牆矮，入口前 5 單位收窄
-const MINI = { lane: 0.8, margin: 0.5, wall: 1.3, taper: 5, group: 'minifunnel' };
+// 漏斗選項：lane 入口半寬、margin 入口離邊牆多遠、wall 邊牆高、clear 邊牆頂到入口滑槽底的空隙、taper 入口前收窄長度、
+//   group 連續的漏斗算同一關、aim 入口滑槽末端偏向漏斗中心幾度（小漏斗太小，沿切線衝進去會飛出牆外）、
+//   coast／coastV 入口前 coast 單位長的滑槽不用 AI，把速度調到 coastV、
+//   damp 彈珠在漏斗裡的阻尼（越大越慢掉進洞），dampIn 洞口附近再加多少阻尼（外圈慢慢繞，靠近洞口才收尾）、
+//   lin／soft 剖面：lin 是直線成分的比例，其餘是雙曲線（越靠中間越陡），soft 把雙曲線的中心磨圓
+// 小漏斗：入口是一條剛好一顆寬的窄槽，入口前 5 單位收窄；牆比空隙高，彈珠才不會跳出去
+const MINI = { lane: 0.8, margin: 0.1, wall: 1.75, clear: 0.15, taper: 5, group: 'minifunnel', aim: 30, coast: 10, coastV: 4.5, damp: 0.4, lin: 0.2, soft: 0 };
+// 大漏斗：剖面幾乎是直的圓錐，外圈阻尼很小，彈珠沿著牆繞好幾圈才慢慢往內收
+const BIG = { damp: 0.04, dampIn: 0.4, lin: 0.8, soft: 10 };
 
 const PROGRAM = [
   ['S', 38, 0.015],     // 起跑區（閘門在 30）
   ['S', 14, 0.1],       // 衝下坡、慢慢變窄
-  ['F', 14, 5, 5],            // 障礙區 1：漏斗，把擠成一團的彈珠拉成一條線
+  ['F', 14, 5, 5, BIG],       // 障礙區 1：漏斗，把擠成一團的彈珠拉成一條線
   ['S', 20, 0.05],      // 離開漏斗底下，夾彎才不會被漏斗擋住
   ['H', 6, 7, 1.6, 0.2],      // 障礙區 2：六連發夾彎（比較陡，才滾得夠快）
   ['S', 8, 0.06],
@@ -39,7 +46,7 @@ const PROGRAM = [
   ['S', 40, 0.0],       // 終點（最後 30 是收集區）
 ];
 
-export const FUNNEL_HOLE = 1.1;        // 洞口半徑：比兩顆並排（直徑 2）再大一點，才不會兩顆互卡堵住
+export const FUNNEL_HOLE = 0.6;        // 洞口半徑：彈珠半徑 0.5，只比彈珠大一點點，一次只過得了一顆
 export const ZIGZAG_LANE = 0.7;        // 夾彎溝槽的半寬：剛好放得下一顆彈珠（直徑 1），只能排成一列
 const ZIGZAG_BANK = 0.5;              // 夾彎彎道的傾斜角（弧度）
 const ZIGZAG_WALL = 1.1;              // 夾彎溝槽的牆高（從溝底算，彈珠直徑 1）
@@ -72,11 +79,11 @@ export function dividerHalf(s, len) {
 }
 export const FUNNEL_LANE = 3.5;        // 進漏斗前賽道縮到這個半寬
 
-// 漏斗剖面：r 從洞口到邊緣，回傳往下的深度（0～1）。一半直線一半雙曲線，越靠中間越陡
-export function funnelDepth(r, R) {
+// 漏斗剖面：r 從洞口到邊緣，回傳往下的深度（0～1）。lin 比例是直線，其餘是雙曲線（越靠中間越陡），soft 把雙曲線的中心磨圓
+export function funnelDepth(r, R, soft = 0, lin = 0.2) {
   const a = (R - r) / (R - FUNNEL_HOLE);
-  const b = (R / r - 1) / (R / FUNNEL_HOLE - 1);
-  return 0.4 * a + 0.6 * b;
+  const b = (1 / (r + soft) - 1 / (R + soft)) / (1 / (FUNNEL_HOLE + soft) - 1 / (R + soft));
+  return lin * a + (1 - lin) * b;
 }
 
 const PEGS_WALL = 6.5;             // 彈珠台的牆高（一般是 WALL_H）
@@ -142,13 +149,14 @@ export function buildTrack(seed = 7) {
   const breaks = new Set();   // i 和 i+1 之間不相連（漏斗洞口的垂直落差）
   for (const cmd of PROGRAM) {
     if (cmd[0] === 'F') {
-      // 漏斗中心在賽道左手邊；賽道末端架在漏斗邊牆上方，彈珠順著切線方向掉進去
-      // opt：lane 入口半寬、margin 入口離邊牆多遠、wall 邊牆高、taper 入口前收窄長度、group 連續的小漏斗算同一關
+      // 漏斗中心在賽道左手邊；賽道末端架在漏斗邊牆上方，彈珠順著切線方向（aim 度往中心偏）掉進去
       const [, Rf, depth, drop, opt = {}] = cmd;
       const lane = opt.lane ?? FUNNEL_LANE, margin = opt.margin ?? 1.2, wall = opt.wall ?? WALL_H;
       const i0 = xs.length - 1;
-      const yRim = y - (wall + BEAM + 0.6);
-      const lx = -Math.sin(h), lz = -Math.cos(h);
+      breaks.add(i0);   // 入口滑槽末端的方向只看前面的點，不然會被往洞口俯衝的參考線拉得歪向下，牆也跟著向前傾
+      const yRim = y - (wall + BEAM + (opt.clear ?? 0.6));
+      const aim = THREE.MathUtils.degToRad(opt.aim ?? 0);
+      const lx = -Math.sin(h) * Math.cos(aim) + Math.cos(h) * Math.sin(aim), lz = -Math.cos(h) * Math.cos(aim) - Math.sin(h) * Math.sin(aim);
       const off = Rf - lane - margin;
       const cx = x + lx * off, cz = z + lz * off;
       // 漏斗裡沒有賽道，用一條從入口到洞口的線當「進度」參考
@@ -161,7 +169,7 @@ export function buildTrack(seed = 7) {
       // 出口賽道從洞口正下方、往後 2 單位開始，彈珠掉下來才接得住
       x = cx - Math.cos(h) * 2; z = cz + Math.sin(h) * 2; y = yRim - depth - drop;
       push(0);
-      funnels.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], R: Rf, depth, yRim, yHole: yRim - depth, lane, wallH: wall, taper: opt.taper ?? 14 });
+      funnels.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], R: Rf, depth, yRim, yHole: yRim - depth, lane, wallH: wall, taper: opt.taper ?? 14, damp: opt.damp ?? 0.3, dampIn: opt.dampIn ?? 0, soft: opt.soft ?? 0, lin: opt.lin ?? 0.2, coast: opt.coast ?? 0, coastV: opt.coastV ?? 0 });
       zoneRanges.push({ type: opt.group || 'funnel', i0, i1 });
     } else if (cmd[0] === 'H') {
       // 一段直、一個 180 度急彎，左彎右彎輪流，整串往左手邊前進
@@ -368,7 +376,7 @@ export function buildTrack(seed = 7) {
   // 6a. 漏斗幾何：錐面（中間開洞）＋邊緣的牆（入口那段不蓋）
   for (const f of funnels) {
     const [cx, cz] = f.c, RINGS = 22, SEG = 64;
-    const pt = (r, a, dy = 0) => [cx + Math.cos(a) * r, f.yRim - f.depth * funnelDepth(r, f.R) + dy, cz + Math.sin(a) * r];
+    const pt = (r, a, dy = 0) => [cx + Math.cos(a) * r, f.yRim - f.depth * funnelDepth(r, f.R, f.soft, f.lin) + dy, cz + Math.sin(a) * r];
     const cone = [], cIdx = [];
     for (let k = 0; k <= RINGS; k++) {
       const r = FUNNEL_HOLE + (f.R - FUNNEL_HOLE) * Math.pow(k / RINGS, 1.6);   // 越靠中間切越細
