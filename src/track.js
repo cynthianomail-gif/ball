@@ -87,7 +87,7 @@ export function funnelDepth(r, R, soft = 0, lin = 0.2) {
 }
 
 const PEGS_WALL = 6.5;             // 彈珠台的牆高（一般是 WALL_H）
-const PISTON_WALL = 4.5;           // 跳跳積木的牆高：衝上升起的積木會被彈高一點，牆要夠高
+const PISTON_WALL = 4.5;           // 跳跳積木的牆高：閘門升到 1.6 高，牆要高出一截，被升起的積木頂上去的彈珠才不會掉出去
 export const PISTON_COLS = 4;      // 跳跳積木一列幾塊
 export const PISTON_ROW = 2.9;     // 跳跳積木每列間隔（積木前後長 2.8）
 
@@ -226,7 +226,7 @@ export function buildTrack(seed = 7) {
   // 2. 寬度
   const total = (N - 1) * STEP;
   const half = new Float32Array(N);
-  // 終點前的放寬從水底隧道出口才開始（水箱要一樣寬）
+  // 終點前的放寬從水底隧道出口才開始（水道和隔板要一樣寬）
   const wideAt = Math.max(total - 46, ...zoneRanges.filter(z => z.type === 'water').map(z => z.i1 * STEP));
   for (let i = 0; i < N; i++) {
     const s = i * STEP;
@@ -256,7 +256,7 @@ export function buildTrack(seed = 7) {
       wallH[i] = Math.max(wallH[i], THREE.MathUtils.lerp(PISTON_WALL, WALL_H, k));
     }
   }
-  // 彈珠台：跳跳積木彈出來的彈珠又高又快，撞到釘子會飛出去，所以牆加高（入口前 4 單位漸漸升高，出口前 6 單位漸漸降回來）
+  // 彈珠台：跳跳積木出來直接接釘子，快的彈珠撞到第一排釘子會彈很高，所以牆加高（入口前 4 單位漸漸升高，出口前 6 單位漸漸降回來）
   for (const z of zoneRanges) if (z.type === 'pegs') {
     const n = Math.round(4 / STEP), m = Math.round(6 / STEP);
     for (let i = z.i0 - n; i <= z.i1; i++) {

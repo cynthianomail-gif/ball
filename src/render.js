@@ -751,7 +751,7 @@ export class View {
     const list = this.bubbles, m4 = this._tm, sc = this._bs;
     if (this.waterTex) this.waterTex.offset.y = (this.waterTex.offset.y + dt * 0.12) % 1;
     for (const m of this.race.marbles) {
-      if (!m.alive || !m.wet || list.length >= this.bubbleMax || Math.random() > dt * 8) continue;
+      if (!m.alive || !m.wet || m.rescue || list.length >= this.bubbleMax || Math.random() > dt * 8) continue;   // 被手抓起來的不冒泡
       const p = m.body.translation();
       list.push({ x: p.x + (Math.random() - 0.5) * 0.5, y: p.y + 0.2 + Math.random() * 0.3, z: p.z + (Math.random() - 0.5) * 0.5, vy: 1.6 + Math.random(), life: 0.9 });
     }
