@@ -1,12 +1,25 @@
 // 用 WebAudio 即時合成的小音效（不需要音檔）
 // 撞擊聲做得很短很亮（玻璃「喀」），音量走平方曲線（輕碰很小聲、重撞才突出），再送進一點房間殘響
-let ctx = null, sfx = null, verb = null, noise = null, roller = null, master = null;
-let volume = 0.75;             // 設定面板的音量 0～1
+import { createMusic } from './music.js';
+
+let ctx = null, sfx = null, verb = null, noise = null, roller = null, master = null, music = null;
+let volume = 0.75;             // 設定面板的音效音量 0～1
+let musicVol = 0.6, racing = false;
 const masterGain = () => volume * 2;   // 壓縮器後的補償增益：音量 1 ＝ ×2（約 +6dB）
+const musicGain = () => musicVol * 0.8;
 
 export function setVolume(v) {
   volume = v;
   if (master) master.gain.setTargetAtTime(masterGain(), ctx.currentTime, 0.02);
+}
+export function setMusicVolume(v) {
+  musicVol = v;
+  if (music) music.out.gain.setTargetAtTime(musicGain(), ctx.currentTime, 0.02);
+}
+// 背景音樂的段落：false＝下注／結算（輕鬆），true＝比賽中（加鼓）
+export function setMusicRace(on) {
+  racing = on;
+  if (music) music.setMode(on);
 }
 
 export function unlock() {
@@ -37,6 +50,10 @@ export function unlock() {
     conv.buffer = roomIR(1.3);
     wet.gain.value = 0.28;
     verb.connect(conv).connect(wet).connect(drive);
+    // 音樂不過壓縮器（才不會被撞擊聲壓得忽大忽小），直接進限幅器
+    music = createMusic(ctx, limit, noise);
+    music.out.gain.value = musicGain();
+    music.setMode(racing);
   }
   if (ctx.state === 'suspended') ctx.resume();
 }
