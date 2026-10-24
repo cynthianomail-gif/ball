@@ -71,14 +71,14 @@ $('musicRange').oninput = e => { tune.music = tuneVal('music', Number(e.target.v
 // 拖轉播音量時念一句試聽
 $('castRange').oninput = e => {
   tune.cast = tuneVal('cast', Number(e.target.value)); showTune(); saveTune(); caster.unlock(); caster.setVolume(tune.cast);
-  clearTimeout(castTry); castTry = setTimeout(() => caster.say('這是轉播的音量。', 3, 2, true), 250);
+  clearTimeout(castTry); castTry = setTimeout(() => caster.say([['這是轉播的音量！', 3]], { pri: 3, ttl: 2, interrupt: true }), 250);
 };
 let castTry = 0;
 $('tuneReset').onclick = () => { Object.assign(tune, TUNE_DEF); syncTune(); saveTune(); applyRest(); };
 $('tuneClose').onclick = () => $('tune').classList.add('hidden');
 for (const b of document.querySelectorAll('.gear')) b.onclick = () => $('tune').classList.toggle('hidden');
 // 轉播：講話時壓低背景音樂；找不到中文語音就在面板上提醒
-const caster = new Commentator({ duck: sfx.duckMusic });
+const caster = new Commentator({ duck: sfx.duckMusic, cheer: sfx.cheer });
 function showVoice() {
   $('castNote').textContent = !caster.supported ? '這個瀏覽器不支援語音轉播。'
     : caster.voiceName ? `用裝置內建的中文語音念比賽實況（${caster.voiceName}）。` : '找不到中文語音，請在系統設定裡安裝中文（台灣）語音。';
@@ -335,7 +335,8 @@ function checkSettle() {
     $('payout').innerHTML = lines.join('') + `<div class="wallet">💰 現在有 <b>${coins}</b></div>`;
     $('result').classList.remove('hidden');
     if (net > 0) sfx.fanfare(); else if (bets.length) sfx.pop();
-    if (bets.length) caster.say(net > 0 ? `恭喜！這場贏了${net}金幣！` : won > 0 ? '有押中，可惜還是小輸一點。' : '可惜沒押中，下一場再來！', 3, 4);
+    if (bets.length) caster.say(net > 0 ? [['恭喜！', 4], [`這場贏了${net}金幣！`, 3]]
+      : won > 0 ? [['有押中！', 2], ['可惜還是小輸一點…', 0]] : [['唉呀…', 0], ['沒押中，下一場再來！', 1]], { pri: 3, ttl: 4 });
   }, 1500);
 }
 
