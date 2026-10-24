@@ -1,7 +1,7 @@
 // 物理世界 + 比賽規則 + AI（不含畫面，可在 Node 裡跑無頭模擬）
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { STEP, trackPoint, trackQuat, mulberry32, floorHeightAt, WALL_H, BEAM, FUNNEL_HOLE, FORK, forkHalf, WATER_DIV, dividerHalf, dividerLat } from './track.js';
+import { STEP, trackPoint, trackQuat, mulberry32, floorHeightAt, WALL_H, BEAM, FUNNEL_HOLE, FORK, forkHalf, WATER_DIV, dividerHalf, dividerLat, funnelDepth } from './track.js';
 
 export const RADIUS = 0.5;
 export const GRAVITY = 30;
@@ -21,15 +21,19 @@ const BASE_DAMP = 0.12;
 // 漏斗：裡面的阻尼比平地大（每個漏斗自己的 damp），彈珠才會一圈圈慢慢繞進洞，不是一衝就掉下去
 // check 秒內幾乎沒動、速度又很小＝卡住，輕推一下；洞口 mouth 範圍內擠了 2 顆以上、jam 秒沒有彈珠掉出去＝塞住，
 // 敲一下（往上 tapUp、往旁邊 tapSide 的速度）；push 是入口滑槽上調速的最大加速度
-export const FUNNEL = { check: 1.0, mouth: 1.8, jam: 0.5, tapUp: 3.5, tapSide: 2.5, tapGrow: 0.5, tapMax: 3, push: 12 };
+// 繞圈助力（漏斗有 laps 的才有）：spinAcc 最大加速度、spinPull 離該在的半徑多遠就加減多少速度、spinDamp 抵銷離開螺旋的徑向速度
+export const FUNNEL = { check: 1.0, mouth: 1.8, jam: 0.5, tapUp: 3.5, tapSide: 2.5, tapGrow: 0.5, tapMax: 3, push: 12, spinAcc: 10, spinPull: 1, spinDamp: 2 };
 // 出界救援（像雲上釣魚人）：等一下 → 手抓著彈珠從高處降下 → 在跑道上停一下 → 放手 → 手收回
 // 單位是秒；height＝手降下前的高度；drop＝放手時彈珠離地的空隙；speed＝放手後沿賽道的初速；holdMax＝落點被擋時最多多等幾秒
 export const RESCUE = { wait: 0.35, down: 0.75, hold: 0.2, up: 0.7, height: 10, drop: 0.3, speed: 7, holdMax: 0.6 };
 const smooth = u => u * u * (3 - 2 * u);
 const popIn = u => { const c = 1.7, v = u - 1; return 1 + (c + 1) * v * v * v + c * v * v; };   // 先衝過頭再回彈
+// 追趕：落後領先者越多，極速越高（每落後 1 單位多 per 倍，最多 max 倍），推力也跟著加 thrust 倍的比例。
+// 拉開很遠的領先者不會穩贏，逆轉才多；只看落後多少，每顆都一樣，不影響公平
+export const CATCHUP = { per: 0.02, max: 0.35, thrust: 2 };
 // 彈珠互撞的彈性（撞了會彈開，玻璃珠的手感）；彈珠自己的彈性只用在互撞
-export const MARBLE_REST = 0.6;
-// 其他東西一律用 Min 規則：填的數字就是彈珠撞到它時實際的彈性（不會被彈珠的 0.6 拉高）
+export const MARBLE_REST = 0.75;
+// 其他東西一律用 Min 規則：填的數字就是彈珠撞到它時實際的彈性（不會被彈珠的 0.75 拉高）
 const rest = (desc, e) => desc.setRestitution(e).setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min);
 
 export async function initPhysics() { await RAPIER.init(); }
@@ -258,6 +262,7 @@ export class Race {
       pt.body.setNextKinematicTranslation(trackPoint(this.track, pt.i, pt.lat, pt.top - pt.hh, _v));
     }
 
+    this._catchup();
     for (const m of this.marbles) {
       if (!m.alive) continue;
       if (m.rescue) {
@@ -278,6 +283,7 @@ export class Race {
       }
       this._water(m);
       this._funnelDamp(m);
+      this._funnelSpin(m, dt);
     }
 
     this.world.step();
@@ -352,7 +358,8 @@ export class Race {
       const ctrl = m.grounded ? 1 : st.air;
       const along = v.x * ix + v.z * iz;
       let ax = 0, az = 0;
-      if (along < st.maxSpeed) { ax += ix * st.thrust * mag; az += iz * st.thrust * mag; }
+      const c = m.boost || 0;
+      if (along < st.maxSpeed * (1 + c)) { ax += ix * st.thrust * (1 + CATCHUP.thrust * c) * mag; az += iz * st.thrust * (1 + CATCHUP.thrust * c) * mag; }
       // 抵銷側滑，讓轉向更聽話
       const px = v.x - along * ix, pz = v.z - along * iz;
       const pm = Math.hypot(px, pz);
@@ -376,6 +383,13 @@ export class Race {
         this.events.push({ type: 'dash', m });
       }
     }
+  }
+
+  // 每顆彈珠的追趕加成：看落後還在跑的最前面那顆多遠
+  _catchup() {
+    let lead = 0;
+    for (const m of this.marbles) if (m.alive && !m.finished && m.maxS > lead) lead = m.maxS;
+    for (const m of this.marbles) m.boost = Math.min(CATCHUP.max, (lead - m.maxS) * CATCHUP.per);
   }
 
   // 在漏斗的碗裡（比邊牆頂低）：不靠 AI，只靠重力和繞圈。還在上方入口滑槽上的不算
@@ -472,6 +486,39 @@ export class Race {
     m.body.setLinearDamping(d);
   }
 
+  // 繞圈助力：前 f.laps 圈沿著從入口半徑收到 f.inner 的螺旋走——切線速度補到「該在的半徑」的繞圈速度
+  // （太外面就給慢一點讓它往內掉，太裡面就快一點甩出去），再抵銷徑向的晃動；繞滿了放手，自己掉進洞。
+  // 離開碗面（被撞飛、跳起來）時不推，所以被撞亂的那幾下就少繞了
+  _funnelSpin(m, dt) {
+    const f = m.funnel;
+    if (!f?.laps || !this._inBowl(m)) return;
+    const p = m.body.translation(), dx = p.x - f.c[0], dz = p.z - f.c[1], r = Math.hypot(dx, dz) || 1e-3;
+    const a = Math.atan2(dz, dx);
+    if (m.fAng == null) { m.fAng = a; m.fR0 = r; return; }
+    let d = a - m.fAng;
+    if (d > Math.PI) d -= 2 * Math.PI; else if (d < -Math.PI) d += 2 * Math.PI;
+    m.fAng = a;
+    const v = m.body.linvel(), ux = dx / r, uz = dz / r;
+    let tx = -uz, tz = ux, vt = v.x * tx + v.z * tz;
+    // 繞的方向看剛進來時往哪邊滾
+    if (!m.fDir) { if (Math.abs(vt) < 1) return; m.fDir = Math.sign(vt); }
+    tx *= m.fDir; tz *= m.fDir; vt *= m.fDir;
+    m.fLaps += Math.max(0, d * m.fDir) / (2 * Math.PI);
+    if (m.fLaps >= f.laps || !m.grounded) return;
+    // 前面收得快、後面慢：大部分圈數在靠近洞口的小圈繞（小圈一圈很快）
+    const u = 1 - m.fLaps / f.laps, want = f.inner + (m.fR0 - f.inner) * u * u * u;
+    // 半徑 r 的繞圈速度：v²/r ＝ 重力 × 坡度
+    const rr = Math.min(f.R - 0.1, Math.max(FUNNEL_HOLE + 0.1, r));
+    const slope = f.depth * (funnelDepth(rr - 0.05, f.R, f.soft, f.lin) - funnelDepth(rr + 0.05, f.R, f.soft, f.lin)) / 0.1;
+    const target = Math.sqrt(GRAVITY * r * Math.max(0.02, slope)) * Math.min(1.2, Math.max(0.35, 1 + FUNNEL.spinPull * (want - r) / r));
+    const lim = FUNNEL.spinAcc * dt, vr = v.x * ux + v.z * uz;
+    const dt_ = Math.max(-lim, Math.min(lim, (target - vt) * 3 * dt));
+    // 只擋「離開螺旋」的徑向速度，往螺旋靠的讓它自己滑
+    const dr = vr * (r - want) > 0 ? Math.max(-lim, Math.min(lim, -vr * FUNNEL.spinDamp * dt)) : 0;
+    const k = m.body.mass();
+    m.body.applyImpulse({ x: (tx * dt_ + ux * dr) * k, y: 0, z: (tz * dt_ + uz * dr) * k }, true);
+  }
+
   // 積木頂面 = base + 0～lift，用 1-cos 讓升降平滑
   _movePiston(pt, t) {
     const a = PISTON.omega * t - pt.phase;
@@ -548,7 +595,7 @@ export class Race {
       if (m.funnel !== f && (m.idx < f.i0 - 2 || m.idx > f.i1)) continue;
       const r = Math.hypot(p.x - f.c[0], p.z - f.c[1]);
       if (r < f.R + 0.5 && p.y > f.yHole - 1.2 && p.y < f.yRim + f.wallH + 3) {
-        if (m.funnel !== f) { m.funnel = f; m.funnelT = 0; m.fRef = null; }
+        if (m.funnel !== f) { m.funnel = f; m.funnelT = 0; m.fRef = null; m.fLaps = 0; m.fAng = null; m.fDir = 0; }
         m.funnelT += DT;
         const frac = Math.min(1, Math.max(0, (f.R - r) / (f.R - FUNNEL_HOLE)));
         m.idx = Math.max(m.idx, f.i0 + Math.round(frac * (f.i1 - f.i0)));

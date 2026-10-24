@@ -18,11 +18,12 @@ const FLOOR_SEGS = 16;
 //   group 連續的漏斗算同一關、aim 入口滑槽末端偏向漏斗中心幾度（小漏斗太小，沿切線衝進去會飛出牆外）、
 //   coast／coastV 入口前 coast 單位長的滑槽不用 AI，把速度調到 coastV、
 //   damp 彈珠在漏斗裡的阻尼（越大越慢掉進洞），dampIn 洞口附近再加多少阻尼（外圈慢慢繞，靠近洞口才收尾）、
-//   lin／soft 剖面：lin 是直線成分的比例，其餘是雙曲線（越靠中間越陡），soft 把雙曲線的中心磨圓
+//   lin／soft 剖面：lin 是直線成分的比例，其餘是雙曲線（越靠中間越陡），soft 把雙曲線的中心磨圓、
+//   laps／inner 繞圈助力：每顆彈珠前 laps 圈沿螺旋從入口半徑慢慢收到 inner，繞滿才自己掉進洞（0＝不助力）
 // 小漏斗：入口是一條剛好一顆寬的窄槽，入口前 5 單位收窄；牆比空隙高，彈珠才不會跳出去
-const MINI = { lane: 0.8, margin: 0.1, wall: 1.75, clear: 0.15, taper: 5, group: 'minifunnel', aim: 30, coast: 10, coastV: 4.5, damp: 0.4, lin: 0.2, soft: 0 };
-// 大漏斗：剖面幾乎是直的圓錐，外圈阻尼很小，彈珠沿著牆繞好幾圈才慢慢往內收
-const BIG = { damp: 0.04, dampIn: 0.4, lin: 0.8, soft: 10 };
+const MINI = { lane: 0.8, margin: 0.1, wall: 1.75, clear: 0.15, taper: 5, group: 'minifunnel', aim: 30, coast: 10, coastV: 4.5, damp: 0.4, lin: 0.2, soft: 0, laps: 4, inner: 1.3 };
+// 大漏斗：越靠中間越陡（像許願池的硬幣漏斗，小圈繞得很快），外圈阻尼很小；每顆至少繞 5 圈才掉進洞（被撞到才會少繞）
+const BIG = { damp: 0.04, dampIn: 0.4, lin: 0.3, soft: 2, laps: 4, inner: 1.8 };
 
 const PROGRAM = [
   ['S', 38, 0.015],     // 起跑區（閘門在 30）
@@ -169,7 +170,7 @@ export function buildTrack(seed = 7) {
       // 出口賽道從洞口正下方、往後 2 單位開始，彈珠掉下來才接得住
       x = cx - Math.cos(h) * 2; z = cz + Math.sin(h) * 2; y = yRim - depth - drop;
       push(0);
-      funnels.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], R: Rf, depth, yRim, yHole: yRim - depth, lane, wallH: wall, taper: opt.taper ?? 14, damp: opt.damp ?? 0.3, dampIn: opt.dampIn ?? 0, soft: opt.soft ?? 0, lin: opt.lin ?? 0.2, coast: opt.coast ?? 0, coastV: opt.coastV ?? 0 });
+      funnels.push({ i0, i1, exitI: i1 + 1, c: [cx, cz], R: Rf, depth, yRim, yHole: yRim - depth, lane, wallH: wall, taper: opt.taper ?? 14, damp: opt.damp ?? 0.3, dampIn: opt.dampIn ?? 0, soft: opt.soft ?? 0, lin: opt.lin ?? 0.2, coast: opt.coast ?? 0, coastV: opt.coastV ?? 0, laps: opt.laps ?? 0, inner: opt.inner ?? 0 });
       zoneRanges.push({ type: opt.group || 'funnel', i0, i1 });
     } else if (cmd[0] === 'H') {
       // 一段直、一個 180 度急彎，左彎右彎輪流，整串往左手邊前進
