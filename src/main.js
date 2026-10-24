@@ -40,25 +40,29 @@ let settled = false;
 
 // ---------- 調整面板 ----------
 // base＝「1x」實際是物理時間的幾倍（預設 2，比賽節奏才夠快）；rest＝彈珠互撞的彈性
-const TUNE_DEF = { base: 2, rest: MARBLE_REST };
-const TUNE_LIM = { base: [0.5, 4], rest: [0.1, 1] };
+// vol＝音效音量 0～1
+const TUNE_DEF = { base: 2, rest: MARBLE_REST, vol: 0.75 };
+const TUNE_LIM = { base: [0.5, 4], rest: [0.1, 1], vol: [0, 1] };
 const tuneVal = (k, v) => {
   if (typeof v !== 'number' || !Number.isFinite(v)) return TUNE_DEF[k];
   return Math.min(TUNE_LIM[k][1], Math.max(TUNE_LIM[k][0], v));
 };
-const tune = { base: tuneVal('base', store.get('marbleDerby.base', TUNE_DEF.base)), rest: tuneVal('rest', store.get('marbleDerby.rest', TUNE_DEF.rest)) };
+const tune = { base: tuneVal('base', store.get('marbleDerby.base', TUNE_DEF.base)), rest: tuneVal('rest', store.get('marbleDerby.rest', TUNE_DEF.rest)), vol: tuneVal('vol', store.get('marbleDerby.vol', TUNE_DEF.vol)) };
 const speedMult = () => tune.base * SPEEDS[speedK];
-const saveTune = () => { store.set('marbleDerby.base', tune.base); store.set('marbleDerby.rest', tune.rest); };
+const saveTune = () => { store.set('marbleDerby.base', tune.base); store.set('marbleDerby.rest', tune.rest); store.set('marbleDerby.vol', tune.vol); };
 // 彈珠彈性只影響彈珠互撞；其他物件取兩者較小值，所以調低時撞賽道、釘子也會變得較不彈
 function applyRest() { if (race) for (const m of race.marbles) m.collider.setRestitution(tune.rest); }
 function showTune() {
   $('baseVal').textContent = `1x ＝ 物理 ${tune.base.toFixed(1)} 倍`;
   $('restVal').textContent = tune.rest.toFixed(2);
+  $('volVal').textContent = tune.vol ? `${Math.round(tune.vol * 100)}%` : '靜音';
 }
-function syncTune() { $('baseRange').value = tune.base; $('restRange').value = tune.rest; showTune(); }
+function syncTune() { $('baseRange').value = tune.base; $('restRange').value = tune.rest; $('volRange').value = tune.vol; showTune(); sfx.setVolume(tune.vol); }
 $('baseRange').oninput = e => { tune.base = tuneVal('base', Number(e.target.value)); showTune(); saveTune(); };
 $('restRange').oninput = e => { tune.rest = tuneVal('rest', Number(e.target.value)); showTune(); saveTune(); applyRest(); };
-$('tuneReset').onclick = () => { tune.base = TUNE_DEF.base; tune.rest = TUNE_DEF.rest; syncTune(); saveTune(); applyRest(); };
+// 拖音量時順便解鎖音效、嗶一聲讓玩家聽得到大小
+$('volRange').oninput = e => { tune.vol = tuneVal('vol', Number(e.target.value)); showTune(); saveTune(); sfx.unlock(); sfx.setVolume(tune.vol); sfx.beep(660, 0.06); };
+$('tuneReset').onclick = () => { Object.assign(tune, TUNE_DEF); syncTune(); saveTune(); applyRest(); };
 $('tuneClose').onclick = () => $('tune').classList.add('hidden');
 for (const b of document.querySelectorAll('.gear')) b.onclick = () => $('tune').classList.toggle('hidden');
 syncTune();

@@ -1,18 +1,32 @@
 // 用 WebAudio 即時合成的小音效（不需要音檔）
 // 撞擊聲做得很短很亮（玻璃「喀」），音量走平方曲線（輕碰很小聲、重撞才突出），再送進一點房間殘響
-let ctx = null, sfx = null, verb = null, noise = null, roller = null;
+let ctx = null, sfx = null, verb = null, noise = null, roller = null, master = null;
+let volume = 0.75;             // 設定面板的音量 0～1
+const masterGain = () => volume * 2;   // 壓縮器後的補償增益：音量 1 ＝ ×2（約 +6dB）
+
+export function setVolume(v) {
+  volume = v;
+  if (master) master.gain.setTargetAtTime(masterGain(), ctx.currentTime, 0.02);
+}
 
 export function unlock() {
   if (!ctx) {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
-    // 總線上掛一個壓縮器，很多彈珠同時撞也不會爆音
+    // 壓縮器 → 音量 → 限幅器 → 喇叭：先推大音量再壓，很多彈珠同時撞也不會爆音
+    const drive = ctx.createGain();
+    drive.gain.value = 2;
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -14; comp.ratio.value = 4;
-    comp.connect(ctx.destination);
+    master = ctx.createGain();
+    master.gain.value = masterGain();
+    const limit = ctx.createDynamicsCompressor();
+    limit.threshold.value = -1; limit.knee.value = 0; limit.ratio.value = 20;
+    limit.attack.value = 0.002; limit.release.value = 0.1;
+    drive.connect(comp).connect(master).connect(limit).connect(ctx.destination);
     // 音效總線先濾掉 40Hz 以下的悶響
     sfx = ctx.createBiquadFilter();
     sfx.type = 'highpass'; sfx.frequency.value = 40; sfx.Q.value = 0.7;
-    sfx.connect(comp);
+    sfx.connect(drive);
     noise = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
     const d = noise.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
@@ -22,7 +36,7 @@ export function unlock() {
     const conv = ctx.createConvolver(), wet = ctx.createGain();
     conv.buffer = roomIR(1.3);
     wet.gain.value = 0.28;
-    verb.connect(conv).connect(wet).connect(comp);
+    verb.connect(conv).connect(wet).connect(drive);
   }
   if (ctx.state === 'suspended') ctx.resume();
 }
