@@ -4,15 +4,9 @@ import { createMusic } from './music.js';
 
 let ctx = null, sfx = null, verb = null, noise = null, roller = null, master = null, music = null;
 let volume = 0.75;             // 設定面板的音效音量 0～1
-let musicVol = 0.6, racing = false, ducked = false;
+let musicVol = 0.6, racing = false;
 const masterGain = () => volume * 2;   // 壓縮器後的補償增益：音量 1 ＝ ×2（約 +6dB）
-const musicGain = () => musicVol * 0.8 * (ducked ? 0.35 : 1);
-
-// 轉播員講話時把背景音樂壓低
-export function duckMusic(on) {
-  ducked = on;
-  if (music) music.out.gain.setTargetAtTime(musicGain(), ctx.currentTime, on ? 0.08 : 0.4);
-}
+const musicGain = () => musicVol * 0.8;
 
 export function setVolume(v) {
   volume = v;
@@ -170,27 +164,6 @@ export function roll(speed, contact) {
   for (; n > 0; n--) {
     if (n < 1 && Math.random() > n) break;
     burst(3000 + Math.random() * 3000, 1.5, 0.002 + Math.random() * 0.004, (0.3 + Math.random() * 0.7) * level * 0.06, roller.grains, Math.random() * dt);
-  }
-}
-
-// 觀眾歡呼：三層濾過的雜訊一起湧上來再慢慢退掉，音量一直小幅抖動（像很多人同時在喊），再加幾聲「喔～」的口哨
-// k＝多熱烈 0～1：越大越響、越久
-export function cheer(k = 0.6) {
-  if (!ctx) return;
-  const t = ctx.currentTime, dur = 1.2 + k * 1.8, out = voice(0, 0.5);
-  for (const [f, q, v] of [[650, 0.6, 1], [1700, 0.9, 0.6], [3200, 1.2, 0.3]]) {
-    const src = ctx.createBufferSource(), bp = ctx.createBiquadFilter(), am = ctx.createGain(), g = ctx.createGain();
-    src.buffer = noise; src.loop = true;
-    bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q;
-    for (let x = 0; x < dur + 0.5; x += 0.06) am.gain.setValueAtTime(0.55 + Math.random() * 0.45, t + x);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.16 * v * (0.4 + 0.6 * k), t + 0.25);
-    g.gain.setTargetAtTime(0.0001, t + 0.4 + k * 0.6, dur / 4);
-    src.connect(bp).connect(am).connect(g).connect(out);
-    src.start(t, Math.random() * 0.5); src.stop(t + dur + 0.5);
-  }
-  for (let n = Math.round(2 + k * 4); n > 0; n--) {
-    tone(900 + Math.random() * 700, 0.35 + Math.random() * 0.3, { vol: 0.012 + 0.018 * k, slide: 300 + Math.random() * 400, delay: 0.1 + Math.random() * 0.8, to: voice(Math.random() * 1.6 - 0.8, 0.5) });
   }
 }
 
