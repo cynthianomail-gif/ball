@@ -4,9 +4,15 @@ import { createMusic } from './music.js';
 
 let ctx = null, sfx = null, verb = null, noise = null, roller = null, master = null, music = null;
 let volume = 0.75;             // 設定面板的音效音量 0～1
-let musicVol = 0.6, racing = false;
+let musicVol = 0.6, racing = false, ducked = false;
 const masterGain = () => volume * 2;   // 壓縮器後的補償增益：音量 1 ＝ ×2（約 +6dB）
-const musicGain = () => musicVol * 0.8;
+const musicGain = () => musicVol * 0.8 * (ducked ? 0.35 : 1);
+
+// 轉播員講話時把背景音樂壓低
+export function duckMusic(on) {
+  ducked = on;
+  if (music) music.out.gain.setTargetAtTime(musicGain(), ctx.currentTime, on ? 0.08 : 0.4);
+}
 
 export function setVolume(v) {
   volume = v;

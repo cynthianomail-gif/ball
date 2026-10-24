@@ -3,6 +3,7 @@ import { Race, initPhysics, DT, MARBLE_REST } from './sim.js';
 import { View, CAM_MODES } from './render.js';
 import { priceRace } from './odds.js';
 import * as sfx from './sound.js';
+import { Commentator } from './commentary.js';
 
 const $ = id => document.getElementById(id);
 const hex = c => '#' + c.toString(16).padStart(6, '0');
@@ -13,6 +14,8 @@ const MAX_STEPS = 40;         // 一幀最多跑幾步物理：10x × 面板最�
 const FIELD = 10;            // 每場 10 顆彈珠
 // 10 種一眼分得出來的顏色：紅 橙 黃 綠 青 藍 紫 粉 棕 黑
 const FIELD_COLORS = [0xe63946, 0xff7b00, 0xffd60a, 0x2ec27e, 0x00b4d8, 0x1d4ed8, 0x8b3fd9, 0xff6fb5, 0x8d5524, 0x2b2b2b];
+// 每個顏色固定一個名字（轉播才好認）
+const FIELD_NAMES = ['火球', '小橘', '檸檬', '薄荷', '蘇打', '藍莓', '葡萄', '櫻桃', '咖啡', '墨墨'];
 const TYPE_NAME = { win: '獨贏', top3: '前三' };
 
 // 錢包存在瀏覽器裡（無痕模式存不了也照樣能玩）
@@ -40,16 +43,16 @@ let settled = false;
 
 // ---------- 調整面板 ----------
 // base＝「1x」實際是物理時間的幾倍（預設 2，比賽節奏才夠快）；rest＝彈珠互撞的彈性
-// vol＝音效音量、music＝背景音樂音量，都是 0～1
-const TUNE_DEF = { base: 2, rest: MARBLE_REST, vol: 0.75, music: 0.6 };
-const TUNE_LIM = { base: [0.5, 4], rest: [0.1, 1], vol: [0, 1], music: [0, 1] };
+// vol＝音效音量、music＝背景音樂音量、cast＝轉播音量，都是 0～1
+const TUNE_DEF = { base: 2, rest: MARBLE_REST, vol: 0.75, music: 0.6, cast: 0.9 };
+const TUNE_LIM = { base: [0.5, 4], rest: [0.1, 1], vol: [0, 1], music: [0, 1], cast: [0, 1] };
 const tuneVal = (k, v) => {
   if (typeof v !== 'number' || !Number.isFinite(v)) return TUNE_DEF[k];
   return Math.min(TUNE_LIM[k][1], Math.max(TUNE_LIM[k][0], v));
 };
-const tune = { base: tuneVal('base', store.get('marbleDerby.base', TUNE_DEF.base)), rest: tuneVal('rest', store.get('marbleDerby.rest', TUNE_DEF.rest)), vol: tuneVal('vol', store.get('marbleDerby.vol', TUNE_DEF.vol)), music: tuneVal('music', store.get('marbleDerby.music', TUNE_DEF.music)) };
+const tune = { base: tuneVal('base', store.get('marbleDerby.base', TUNE_DEF.base)), rest: tuneVal('rest', store.get('marbleDerby.rest', TUNE_DEF.rest)), vol: tuneVal('vol', store.get('marbleDerby.vol', TUNE_DEF.vol)), music: tuneVal('music', store.get('marbleDerby.music', TUNE_DEF.music)), cast: tuneVal('cast', store.get('marbleDerby.cast', TUNE_DEF.cast)) };
 const speedMult = () => tune.base * SPEEDS[speedK];
-const saveTune = () => { store.set('marbleDerby.base', tune.base); store.set('marbleDerby.rest', tune.rest); store.set('marbleDerby.vol', tune.vol); store.set('marbleDerby.music', tune.music); };
+const saveTune = () => { store.set('marbleDerby.base', tune.base); store.set('marbleDerby.rest', tune.rest); store.set('marbleDerby.vol', tune.vol); store.set('marbleDerby.music', tune.music); store.set('marbleDerby.cast', tune.cast); };
 // 彈珠彈性只影響彈珠互撞；其他物件取兩者較小值，所以調低時撞賽道、釘子也會變得較不彈
 function applyRest() { if (race) for (const m of race.marbles) m.collider.setRestitution(tune.rest); }
 function showTune() {
@@ -57,16 +60,31 @@ function showTune() {
   $('restVal').textContent = tune.rest.toFixed(2);
   $('volVal').textContent = tune.vol ? `${Math.round(tune.vol * 100)}%` : '靜音';
   $('musicVal').textContent = tune.music ? `${Math.round(tune.music * 100)}%` : '關閉';
+  $('castVal').textContent = tune.cast ? `${Math.round(tune.cast * 100)}%` : '關閉';
 }
-function syncTune() { $('baseRange').value = tune.base; $('restRange').value = tune.rest; $('volRange').value = tune.vol; $('musicRange').value = tune.music; showTune(); sfx.setVolume(tune.vol); sfx.setMusicVolume(tune.music); }
+function syncTune() { $('baseRange').value = tune.base; $('restRange').value = tune.rest; $('volRange').value = tune.vol; $('musicRange').value = tune.music; $('castRange').value = tune.cast; showTune(); sfx.setVolume(tune.vol); sfx.setMusicVolume(tune.music); caster.setVolume(tune.cast); }
 $('baseRange').oninput = e => { tune.base = tuneVal('base', Number(e.target.value)); showTune(); saveTune(); };
 $('restRange').oninput = e => { tune.rest = tuneVal('rest', Number(e.target.value)); showTune(); saveTune(); applyRest(); };
 // 拖音量時順便解鎖音效、嗶一聲讓玩家聽得到大小
 $('volRange').oninput = e => { tune.vol = tuneVal('vol', Number(e.target.value)); showTune(); saveTune(); sfx.unlock(); sfx.setVolume(tune.vol); sfx.beep(660, 0.06); };
 $('musicRange').oninput = e => { tune.music = tuneVal('music', Number(e.target.value)); showTune(); saveTune(); sfx.unlock(); sfx.setMusicVolume(tune.music); };
+// 拖轉播音量時念一句試聽
+$('castRange').oninput = e => {
+  tune.cast = tuneVal('cast', Number(e.target.value)); showTune(); saveTune(); caster.unlock(); caster.setVolume(tune.cast);
+  clearTimeout(castTry); castTry = setTimeout(() => caster.say('這是轉播的音量。', 3, 2, true), 250);
+};
+let castTry = 0;
 $('tuneReset').onclick = () => { Object.assign(tune, TUNE_DEF); syncTune(); saveTune(); applyRest(); };
 $('tuneClose').onclick = () => $('tune').classList.add('hidden');
 for (const b of document.querySelectorAll('.gear')) b.onclick = () => $('tune').classList.toggle('hidden');
+// 轉播：講話時壓低背景音樂；找不到中文語音就在面板上提醒
+const caster = new Commentator({ duck: sfx.duckMusic });
+function showVoice() {
+  $('castNote').textContent = !caster.supported ? '這個瀏覽器不支援語音轉播。'
+    : caster.voiceName ? `用裝置內建的中文語音念比賽實況（${caster.voiceName}）。` : '找不到中文語音，請在系統設定裡安裝中文（台灣）語音。';
+}
+showVoice();
+window.speechSynthesis?.addEventListener?.('voiceschanged', showVoice);
 syncTune();
 // 瀏覽器要等玩家第一次點擊才准出聲：點哪裡都行，背景音樂就從這時開始
 window.addEventListener('pointerdown', () => sfx.unlock(), { once: true });
@@ -80,7 +98,7 @@ for (const c of CHIPS) {
   $('chips').appendChild(b);
 }
 $('clearBtn').onclick = () => { bets = []; refreshBets(); };
-$('goBtn').onclick = () => { sfx.unlock(); startRace(); };
+$('goBtn').onclick = () => { sfx.unlock(); caster.unlock(); startRace(); };
 $('nextBtn').onclick = () => openBetting();
 $('btnNext').onclick = () => openBetting();
 $('watchBtn').onclick = () => { $('result').classList.add('hidden'); $('btnNext').classList.remove('hidden'); };
@@ -101,6 +119,8 @@ function openBetting() {
 function setupRace() {
   if (race) race.world.free();
   race = new Race(track, { count: FIELD, seed: (Math.random() * 1e9) | 0, player: false, palette: FIELD_COLORS });
+  for (const m of race.marbles) m.name = FIELD_NAMES[m.id];
+  caster.stop();
   applyRest();
   priceRace(race);
   view.setRace(race);
@@ -171,6 +191,7 @@ function startRace() {
   phase = 'racing';
   sfx.setMusicRace(true);
   const ids = [...new Set(bets.map(b => b.id))];
+  caster.start(race, ids, raceNo);
   view.setMarked(ids);
   view.focusId = ids.length ? ids[0] : -1;
   view.camMode = 0;
@@ -238,6 +259,7 @@ const isMine = m => bets.some(b => b.id === m.id);
 
 function handleEvents() {
   for (const e of race.events) {
+    caster.onEvent(e);
     switch (e.type) {
       case 'go': showMsg('GO!', '', 0.9); sfx.beep(880, 0.35); break;
       case 'hit': hits.push(e); break;
@@ -313,6 +335,7 @@ function checkSettle() {
     $('payout').innerHTML = lines.join('') + `<div class="wallet">💰 現在有 <b>${coins}</b></div>`;
     $('result').classList.remove('hidden');
     if (net > 0) sfx.fanfare(); else if (bets.length) sfx.pop();
+    if (bets.length) caster.say(net > 0 ? `恭喜！這場贏了${net}金幣！` : won > 0 ? '有押中，可惜還是小輸一點。' : '可惜沒押中，下一場再來！', 3, 4);
   }, 1500);
 }
 
@@ -481,6 +504,7 @@ function frame(now) {
     if (n === MAX_STEPS) acc = 0;
     playHits();
     checkSettle();
+    caster.update(SPEEDS[speedK] >= 5);
   } else {
     // 下注時鏡頭在起跑線上方慢慢繞
     view.yawOffset = Math.sin(now / 4000) * 0.6;
